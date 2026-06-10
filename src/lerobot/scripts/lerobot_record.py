@@ -151,7 +151,7 @@ from lerobot.teleoperators import (  # noqa: F401
     unitree_g1,
 )
 from lerobot.teleoperators.keyboard import KeyboardTeleop
-from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.constants import ACTION, OBS_EFFORT, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
@@ -160,6 +160,37 @@ from lerobot.utils.utils import (
     log_say,
 )
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+
+
+def _get_effort_names(effort_dim: int, effort_names: list[str] | None) -> list[str]:
+    # 他山传感器会在 EffortSensor 内部把每个触点的 nf/tf/tfDir 转成 fx/fy/fz。
+    if effort_names is None and effort_dim % 3 == 0:
+        names = []
+        for point_idx in range(effort_dim // 3):
+            names.extend([f"fx_{point_idx}", f"fy_{point_idx}", f"fz_{point_idx}"])
+    else:
+        names = effort_names or [f"effort_{i}" for i in range(effort_dim)]
+    if len(names) != effort_dim:
+        raise ValueError(f"dataset.effort_names length {len(names)} must match dataset.effort_dim {effort_dim}")
+    if len(set(names)) != len(names):
+        raise ValueError("dataset.effort_names must be unique")
+    return names
+
+
+def _add_effort_dataset_feature(dataset_features: dict, effort_dim: int, effort_names: list[str]) -> None:
+    dataset_features[OBS_EFFORT] = {
+        "dtype": "float32",
+        "shape": (effort_dim,),
+        "names": effort_names,
+    }
+
+
+def _read_effort_into_observation(obs: RobotObservation, effort_sensor, effort_names: list[str]) -> None:
+    effort = list(effort_sensor.read())
+    if len(effort) != len(effort_names):
+        raise ValueError(f"Effort sensor returned {len(effort)} values, expected {len(effort_names)}")
+    for name, value in zip(effort_names, effort, strict=True):
+        obs[name] = float(value)
 
 
 @dataclass
@@ -236,6 +267,8 @@ def record_loop(
     single_task: str | None = None,
     display_data: bool = False,
     display_compressed_images: bool = False,
+    effort_sensor=None,
+    effort_names: list[str] | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -282,6 +315,11 @@ def record_loop(
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
+
+        if effort_sensor is not None:
+            if effort_names is None:
+                raise ValueError("effort_names must be provided when effort_sensor is enabled")
+            _read_effort_into_observation(obs_processed, effort_sensor, effort_names)
 
         if dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
@@ -365,6 +403,12 @@ def record(
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
+    effort_sensor = None
+    effort_names = _get_effort_names(cfg.dataset.effort_dim, cfg.dataset.effort_names)
+    if cfg.dataset.record_effort:
+        from lerobot.sensors import make_effort_sensor
+
+        effort_sensor = make_effort_sensor(cfg.dataset.effort_dim, effort_names)
 
     # Fall back to identity pipelines when the caller doesn't supply processors.
     if (
@@ -391,6 +435,8 @@ def record(
             use_videos=cfg.dataset.video,
         ),
     )
+    if cfg.dataset.record_effort:
+        _add_effort_dataset_feature(dataset_features, cfg.dataset.effort_dim, effort_names)
 
     dataset = None
     listener = None
@@ -465,6 +511,8 @@ def record(
                     single_task=cfg.dataset.single_task,
                     display_data=cfg.display_data,
                     display_compressed_images=display_compressed_images,
+                    effort_sensor=effort_sensor,
+                    effort_names=effort_names if cfg.dataset.record_effort else None,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment
@@ -502,6 +550,8 @@ def record(
         if dataset:
             dataset.finalize()
 
+        if effort_sensor is not None:
+            effort_sensor.close()
         if robot.is_connected:
             robot.disconnect()
         if teleop and teleop.is_connected:

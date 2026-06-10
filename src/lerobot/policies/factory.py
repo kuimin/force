@@ -90,7 +90,7 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
 
     Args:
         name: The name of the policy. Supported names are "tdmpc", "diffusion", "act",
-            "multi_task_dit", "vqbet", "pi0", "pi05", "gaussian_actor", "smolvla", "wall_x",
+            "multi_task_dit", "vqbet", "pi0", "pi05", "ta-vla", "gaussian_actor", "smolvla", "wall_x",
             "molmoact2".
     Returns:
         The policy class corresponding to the given name.
@@ -130,6 +130,9 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from .pi05.modeling_pi05 import PI05Policy
 
         return PI05Policy
+    elif name == "ta-vla":
+        module = importlib.import_module("lerobot.policies.ta-vla.modeling_ta")
+        return module.TAVLAPolicy
     elif name == "gaussian_actor":
         from .gaussian_actor.modeling_gaussian_actor import GaussianActorPolicy
 
@@ -178,7 +181,7 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
 
     Args:
         policy_type: The type of the policy. Supported types include "tdmpc",
-                     "multi_task_dit", "diffusion", "act", "vqbet", "pi0", "pi05", "gaussian_actor",
+                     "multi_task_dit", "diffusion", "act", "vqbet", "pi0", "pi05", "ta-vla", "gaussian_actor",
                      "smolvla", "wall_x", "molmoact2".
         **kwargs: Keyword arguments to be passed to the configuration class constructor.
 
@@ -202,6 +205,9 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return PI0Config(**kwargs)
     elif policy_type == "pi05":
         return PI05Config(**kwargs)
+    elif policy_type == "ta-vla":
+        module = importlib.import_module("lerobot.policies.ta-vla.configuration_ta")
+        return module.TAVLAConfig(**kwargs)
     elif policy_type == "gaussian_actor":
         return GaussianActorConfig(**kwargs)
     elif policy_type == "smolvla":
@@ -377,6 +383,13 @@ def make_pre_post_processors(
         from .pi05.processor_pi05 import make_pi05_pre_post_processors
 
         processors = make_pi05_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif getattr(policy_cfg, "type", None) == "ta-vla":
+        module = importlib.import_module("lerobot.policies.ta-vla.processor_ta")
+        processors = module.make_tavla_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
