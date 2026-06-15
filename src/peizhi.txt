@@ -1,0 +1,39 @@
+sudo ip addr flush dev enp2s0
+sudo ip addr add 192.168.1.100/24 dev enp2s0
+sudo ip link set enp2s0 up
+
+gello
+sudo chmod 666 /dev/ttyUSB0
+ls -l /dev/serial/by-id/
+
+tashan
+sudo rmmod spi_ch341 #删除原本的驱动端口
+sudo insmod /home/robot/tashan/采集脚本/lib/ch341/CH341PAR_LINUX/driver/ch34x_pis.ko #加载他山驱动
+ls -l /dev/ch34x_pis* #检查驱动端口
+sudo chmod 666 /dev/ch34x_pis* #给权限
+TASHAN_PCA_INDICES=4,5 #现在通道
+
+python lerobot/scripts/lerobot_record.py \
+  --robot.type=ur5e \
+  --robot.ip=192.168.1.10 \
+  --teleop.type=gello \
+  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBE09I7-if00-port0 \
+  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
+  --dataset.repo_id=kuimin/test_ur_gello \
+  --dataset.single_task="test" \
+  --dataset.record_effort=true \
+  --dataset.effort_dim=12 \
+  --dataset.push_to_hub=false
+
+
+python lerobot/scripts/lerobot_record.py \
+  --robot.type=ur5e \
+  --robot.ip=192.168.1.10 \
+  --teleop.type=gello \
+  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBE09I7-if00-port0 \
+  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
+  --dataset.repo_id=kuimin/test_ur_gello \
+  --dataset.single_task="test" \
+  --dataset.record_effort=false \
+  --dataset.push_to_hub=false \
+  --dataset.video=false

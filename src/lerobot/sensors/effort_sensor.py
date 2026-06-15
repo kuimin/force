@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import ctypes
 import glob
+import logging
 import math
+import os
 import time
 from ctypes import Structure, c_byte, c_float, c_long, c_uint16, c_uint32, c_uint8
 from dataclasses import dataclass, field
@@ -23,6 +25,8 @@ TASHAN_CH341_LIB = Path(__file__).resolve().parent / "lib" / "ch347" / "libch347
 TASHAN_PCA_INDEX = 4
 TASHAN_PCA_ADDR = 0x70
 INVALID_TF_DIR = 65535
+
+logger = logging.getLogger(__name__)
 
 
 class DynamicYddsComTs(Structure):
@@ -219,7 +223,7 @@ class CH341Device:
     def set_speed(self, speed: int) -> None:
         fd = self._require_fd()
         if not self.ch341_set_stream(fd, speed | 0):
-            raise RuntimeError("CH341 I2C 速度设置失败")
+            logger.warning("CH341 I2C 速度设置失败，继续使用当前设备速度")
 
 
 class SensorCommand:
@@ -380,12 +384,28 @@ class EffortSensor:
     effort_dim: int
     effort_names: Sequence[str]
     pca_index: int = TASHAN_PCA_INDEX
-    _reader: TashanTouchReader = field(init=False, repr=False)
+    pca_indices: Sequence[int] | None = None
+    _ch341: CH341Device = field(init=False, repr=False)
+    _readers: list[TashanTouchReader] = field(default_factory=list, init=False, repr=False)
     _last_effort: list[float] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._reader = TashanTouchReader(pca_index=self.pca_index)
-        self._reader.open()
+        indices = list(self.pca_indices) if self.pca_indices is not None else self._default_pca_indices()
+        self._ch341 = CH341Device()
+        self._ch341.open()
+        cmd = SensorCommand(self._ch341)
+        for index in indices:
+            reader = TashanTouchReader(pca_index=index, ch341=self._ch341, cmd=cmd)
+            reader._select_pca_channel()
+            reader._connect_sensor()
+            self._readers.append(reader)
+
+    def _default_pca_indices(self) -> list[int]:
+        env_indices = os.environ.get("TASHAN_PCA_INDICES")
+        if env_indices:
+            return [int(index.strip()) for index in env_indices.split(",") if index.strip()]
+        sensor_count = max(1, math.ceil(self.effort_dim / 6))
+        return [self.pca_index + offset for offset in range(sensor_count)]
 
     @staticmethod
     def _to_fx_fy_fz(nf: float, tf: float, tf_dir: int) -> list[float]:
@@ -395,15 +415,15 @@ class EffortSensor:
         return [tf * math.cos(rad), tf * math.sin(rad), nf]
 
     def read(self) -> list[float]:
-        """读取两个触点的 [fx, fy, fz]，返回长度固定为 ``effort_dim``。"""
-        nf_values, tf_values, tf_dir_values = self._reader.read_nf_tf_dir()
-        point_count = max(2, self.effort_dim // 3)
+        """读取每个传感器两个触点的 [fx, fy, fz]，返回长度固定为 ``effort_dim``。"""
         values: list[float] = []
-        for i in range(point_count):
-            nf = float(nf_values[i]) if i < len(nf_values) else 0.0
-            tf = float(tf_values[i]) if i < len(tf_values) else 0.0
-            tf_dir = int(tf_dir_values[i]) if i < len(tf_dir_values) else INVALID_TF_DIR
-            values.extend(self._to_fx_fy_fz(nf, tf, tf_dir))
+        for reader in self._readers:
+            nf_values, tf_values, tf_dir_values = reader.read_nf_tf_dir()
+            for i in range(2):
+                nf = float(nf_values[i]) if i < len(nf_values) else 0.0
+                tf = float(tf_values[i]) if i < len(tf_values) else 0.0
+                tf_dir = int(tf_dir_values[i]) if i < len(tf_dir_values) else INVALID_TF_DIR
+                values.extend(self._to_fx_fy_fz(nf, tf, tf_dir))
 
         if len(values) < self.effort_dim:
             values.extend([0.0] * (self.effort_dim - len(values)))
@@ -411,7 +431,7 @@ class EffortSensor:
         return list(self._last_effort)
 
     def close(self) -> None:
-        self._reader.close()
+        self._ch341.close()
 
 
 def make_effort_sensor(effort_dim: int, effort_names: Sequence[str]) -> EffortSensor:
