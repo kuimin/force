@@ -92,6 +92,7 @@ from dataclasses import asdict, dataclass
 from pprint import pformat
 
 from lerobot.cameras import CameraConfig  # noqa: F401
+from lerobot.cameras.hikrobot import HikrobotCameraConfig  # noqa: F401
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.reachy2_camera import Reachy2CameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401

@@ -58,6 +58,7 @@ import time
 from dataclasses import asdict, dataclass
 from pprint import pformat
 
+from lerobot.cameras.hikrobot import HikrobotCameraConfig  # noqa: F401
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.cameras.zmq import ZMQCameraConfig  # noqa: F401
@@ -84,6 +85,7 @@ from lerobot.robots import (  # noqa: F401
     rebot_b601_follower,
     so_follower,
     unitree_g1 as unitree_g1_robot,
+    ur5e,
 )
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
@@ -92,6 +94,7 @@ from lerobot.teleoperators import (  # noqa: F401
     bi_rebot_102_leader,
     bi_so_leader,
     gamepad,
+    gello,
     homunculus,
     keyboard,
     koch_leader,
@@ -110,6 +113,29 @@ from lerobot.utils.utils import init_logging, move_cursor_up
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data, shutdown_rerun
 
 
+def _get_effort_names(effort_dim: int, effort_names: list[str] | None) -> list[str]:
+    # 他山传感器会在 EffortSensor 内部把每个触点的 nf/tf/tfDir 转成 fx/fy/fz。
+    if effort_names is None and effort_dim % 3 == 0:
+        names = []
+        for point_idx in range(effort_dim // 3):
+            names.extend([f"fx_{point_idx}", f"fy_{point_idx}", f"fz_{point_idx}"])
+    else:
+        names = effort_names or [f"effort_{i}" for i in range(effort_dim)]
+    if len(names) != effort_dim:
+        raise ValueError(f"effort_names length {len(names)} must match effort_dim {effort_dim}")
+    if len(set(names)) != len(names):
+        raise ValueError("effort_names must be unique")
+    return names
+
+
+def _read_effort_into_observation(obs: RobotObservation, effort_sensor, effort_names: list[str]) -> None:
+    effort = list(effort_sensor.read())
+    if len(effort) != len(effort_names):
+        raise ValueError(f"Effort sensor returned {len(effort)} values, expected {len(effort_names)}")
+    for name, value in zip(effort_names, effort, strict=True):
+        obs[name] = float(value)
+
+
 @dataclass
 class TeleoperateConfig:
     # TODO: pepijn, steven: if more robots require multiple teleoperators (like lekiwi) its good to make this possibele in teleop.py and record.py with List[Teleoperator]
@@ -126,6 +152,12 @@ class TeleoperateConfig:
     display_port: int | None = None
     # Whether to  display compressed images in Rerun
     display_compressed_images: bool = False
+    # Read tactile/contact force during teleoperation and display it in Rerun.
+    display_effort: bool = False
+    # 单帧力信息维度。默认一片他山传感器，两个触点，每个触点 fx/fy/fz，所以默认 6 维。
+    effort_dim: int = 6
+    # 每个力通道的名字；维度能被 3 整除时默认 fx_0/fy_0/fz_0...，否则默认 effort_0...。
+    effort_names: list[str] | None = None
 
 
 def teleop_loop(
@@ -138,6 +170,8 @@ def teleop_loop(
     display_data: bool = False,
     duration: float | None = None,
     display_compressed_images: bool = False,
+    effort_sensor=None,
+    effort_names: list[str] | None = None,
 ):
     """
     This function continuously reads actions from a teleoperation device, processes them through optional
@@ -166,6 +200,10 @@ def teleop_loop(
         # teleop_action_processor can take None as an observation
         # given that it is the identity processor as default
         obs = robot.get_observation()
+        if effort_sensor is not None:
+            if effort_names is None:
+                raise ValueError("effort_names must be provided when effort_sensor is enabled")
+            _read_effort_into_observation(obs, effort_sensor, effort_names)
 
         if robot.name == "unitree_g1":
             teleop.send_feedback(obs)
@@ -224,11 +262,16 @@ def teleoperate(cfg: TeleoperateConfig):
     teleop = make_teleoperator_from_config(cfg.teleop)
     robot = make_robot_from_config(cfg.robot)
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
+    effort_sensor = None
+    effort_names = _get_effort_names(cfg.effort_dim, cfg.effort_names)
+    if cfg.display_effort:
+        from lerobot.sensors import make_effort_sensor
 
-    teleop.connect()
-    robot.connect()
+        effort_sensor = make_effort_sensor(cfg.effort_dim, effort_names)
 
     try:
+        robot.connect()
+        teleop.connect()
         teleop_loop(
             teleop=teleop,
             robot=robot,
@@ -239,14 +282,20 @@ def teleoperate(cfg: TeleoperateConfig):
             robot_action_processor=robot_action_processor,
             robot_observation_processor=robot_observation_processor,
             display_compressed_images=display_compressed_images,
+            effort_sensor=effort_sensor,
+            effort_names=effort_names if cfg.display_effort else None,
         )
     except KeyboardInterrupt:
         pass
     finally:
         if cfg.display_data:
             shutdown_rerun()
-        teleop.disconnect()
-        robot.disconnect()
+        if effort_sensor is not None:
+            effort_sensor.close()
+        if teleop.is_connected:
+            teleop.disconnect()
+        if robot.is_connected:
+            robot.disconnect()
 
 
 def main():

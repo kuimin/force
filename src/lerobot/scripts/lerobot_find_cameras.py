@@ -38,6 +38,7 @@ import numpy as np
 from PIL import Image
 
 from lerobot.cameras import ColorMode
+from lerobot.cameras.hikrobot import HikrobotCamera, HikrobotCameraConfig
 from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 from lerobot.cameras.realsense import RealSenseCamera, RealSenseCameraConfig
 
@@ -86,12 +87,34 @@ def find_all_realsense_cameras() -> list[dict[str, Any]]:
     return all_realsense_cameras_info
 
 
+def find_all_hikrobot_cameras() -> list[dict[str, Any]]:
+    """
+    Finds all available Hikrobot/Hikvision MVS cameras plugged into the system.
+
+    Returns:
+        A list of all available Hikrobot cameras with their metadata.
+    """
+    all_hikrobot_cameras_info: list[dict[str, Any]] = []
+    logger.info("Searching for Hikrobot cameras...")
+    try:
+        hikrobot_cameras = HikrobotCamera.find_cameras()
+        for cam_info in hikrobot_cameras:
+            all_hikrobot_cameras_info.append(cam_info)
+        logger.info(f"Found {len(hikrobot_cameras)} Hikrobot cameras.")
+    except ImportError:
+        logger.warning("Skipping Hikrobot camera search: Hikrobot MVS SDK Python bindings not found.")
+    except Exception as e:
+        logger.error(f"Error finding Hikrobot cameras: {e}")
+
+    return all_hikrobot_cameras_info
+
+
 def find_and_print_cameras(camera_type_filter: str | None = None) -> list[dict[str, Any]]:
     """
     Finds available cameras based on an optional filter and prints their information.
 
     Args:
-        camera_type_filter: Optional string to filter cameras ("realsense" or "opencv").
+        camera_type_filter: Optional string to filter cameras ("realsense", "opencv", or "hikrobot").
                             If None, lists all cameras.
 
     Returns:
@@ -106,6 +129,8 @@ def find_and_print_cameras(camera_type_filter: str | None = None) -> list[dict[s
         all_cameras_info.extend(find_all_opencv_cameras())
     if camera_type_filter is None or camera_type_filter == "realsense":
         all_cameras_info.extend(find_all_realsense_cameras())
+    if camera_type_filter is None or camera_type_filter == "hikrobot":
+        all_cameras_info.extend(find_all_hikrobot_cameras())
 
     if not all_cameras_info:
         if camera_type_filter:
@@ -172,6 +197,12 @@ def create_camera_instance(cam_meta: dict[str, Any]) -> dict[str, Any] | None:
                 color_mode=ColorMode.RGB,
             )
             instance = RealSenseCamera(rs_config)
+        elif cam_type == "Hikrobot":
+            hk_config = HikrobotCameraConfig(
+                serial_number=cam_id,
+                color_mode=ColorMode.RGB,
+            )
+            instance = HikrobotCamera(hk_config)
         else:
             logger.warning(f"Unknown camera type: {cam_type} for ID {cam_id}. Skipping.")
             return None
@@ -237,7 +268,7 @@ def save_images_from_all_cameras(
     Args:
         output_dir: Directory to save images.
         record_time_s: Duration in seconds to record images.
-        camera_type: Optional string to filter cameras ("realsense" or "opencv").
+        camera_type: Optional string to filter cameras ("realsense", "opencv", or "hikrobot").
                             If None, uses all detected cameras.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -294,8 +325,8 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        choices=["realsense", "opencv"],
-        help="Specify camera type to capture from (e.g., 'realsense', 'opencv'). Captures from all if omitted.",
+        choices=["realsense", "opencv", "hikrobot"],
+        help="Specify camera type to capture from (e.g., 'realsense', 'opencv', 'hikrobot'). Captures from all if omitted.",
     )
     parser.add_argument(
         "--output-dir",

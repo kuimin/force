@@ -44,12 +44,11 @@ class TAVLAConfig(PreTrainedConfig):
     max_action_dim: int = 32
 
     # TA-VLA 默认总是使用接触力信息，不再做开关。
-    # 设计对应之前 openpi 里的 EXPERT_HIS_C_FUT：
-    # 1. 把历史接触力拼成一个 token，送进 action expert；
-    # 2. 训练时除了预测动作，也预测未来接触力，作为辅助监督。
+    # 设计对应 openpi 里的 EXPERT_HIS_C：
+    # 把历史接触力拼成一个 token，送进 action expert；不预测未来接触力。
     effort_dim: int = 6  # 每一帧接触力向量的维度。他山一片手指默认两个触点，每个触点 fx/fy/fz。
-    effort_history: tuple[int, ...] = (0,)  # 使用多少帧历史力。默认只用当前帧，所以 history_len=1。
-    effort_loss_weight: float = 0.1  # 未来接触力预测 loss 的权重，越大模型越重视力预测辅助任务。
+    # 默认按 30Hz 下约 1s 窗口均匀取 10 个历史力采样点；这里是帧偏移，不是秒。
+    effort_history: tuple[int, ...] = (-30, -27, -23, -20, -17, -13, -10, -7, -3, 0)
 
     # Flow matching parameters: see openpi `PI0Pytorch`
     num_inference_steps: int = 10
@@ -150,11 +149,10 @@ class TAVLAConfig(PreTrainedConfig):
             self.input_features[OBS_STATE] = state_feature
 
         if OBS_EFFORT not in self.input_features:
-            # observation.effort 的时间维 = 历史力长度 + 未来力长度。
-            # 前 len(effort_history) 帧作为模型输入，后 chunk_size 帧作为训练时的未来力监督目标。
+            # observation.effort 的时间维 = 历史力长度，只作为模型输入条件。
             effort_feature = PolicyFeature(
                 type=FeatureType.STATE,
-                shape=(len(self.effort_history) + self.chunk_size, self.effort_dim),
+                shape=(len(self.effort_history), self.effort_dim),
             )
             self.input_features[OBS_EFFORT] = effort_feature
 
@@ -187,10 +185,9 @@ class TAVLAConfig(PreTrainedConfig):
         return None
 
     @property
-    def effort_delta_indices(self) -> list[int]:
-        # observation.effort 单独取历史力 + 与 action horizon 对齐的未来力。
-        # 默认 effort_history=(0,), chunk_size=50 -> [0, 0, 1, ..., 49]。
-        return list(self.effort_history) + list(range(self.chunk_size))
+    def effort_delta_indices(self) -> list[float]:
+        # observation.effort 只取历史力，不再加载未来力监督。
+        return list(self.effort_history)
 
     @property
     def action_delta_indices(self) -> list:

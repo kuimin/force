@@ -47,6 +47,11 @@ def make_cameras_from_configs(camera_configs: dict[str, CameraConfig]) -> dict[s
 
             cameras[key] = ZMQCamera(cfg)
 
+        elif cfg.type == "hikrobot":
+            from .hikrobot import HikrobotCamera
+
+            cameras[key] = HikrobotCamera(cfg)
+
         else:
             try:
                 cameras[key] = cast(Camera, make_device_from_device_class(cfg))

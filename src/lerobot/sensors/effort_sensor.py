@@ -18,6 +18,7 @@ import time
 from ctypes import Structure, c_byte, c_float, c_long, c_uint16, c_uint32, c_uint8
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Sequence
 
 
@@ -25,6 +26,7 @@ TASHAN_CH341_LIB = Path(__file__).resolve().parent / "lib" / "ch347" / "libch347
 TASHAN_PCA_INDEX = 4
 TASHAN_PCA_ADDR = 0x70
 INVALID_TF_DIR = 65535
+DEFAULT_TASHAN_READ_HZ = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -385,20 +387,54 @@ class EffortSensor:
     effort_names: Sequence[str]
     pca_index: int = TASHAN_PCA_INDEX
     pca_indices: Sequence[int] | None = None
+    read_hz: float = DEFAULT_TASHAN_READ_HZ
     _ch341: CH341Device = field(init=False, repr=False)
     _readers: list[TashanTouchReader] = field(default_factory=list, init=False, repr=False)
+    _reader_slots: list[TashanTouchReader | None] = field(default_factory=list, init=False, repr=False)
     _last_effort: list[float] | None = field(default=None, init=False, repr=False)
+    _last_timestamp: float | None = field(default=None, init=False, repr=False)
+    _last_stale_warning: float = field(default=0.0, init=False, repr=False)
+    _thread: Thread | None = field(default=None, init=False, repr=False)
+    _stop_event: Event = field(default_factory=Event, init=False, repr=False)
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         indices = list(self.pca_indices) if self.pca_indices is not None else self._default_pca_indices()
+        sensor_count = max(1, math.ceil(self.effort_dim / 6))
+        if len(indices) > sensor_count:
+            logger.warning(
+                "TASHAN_PCA_INDICES=%s 超过 effort_dim=%s 需要的传感器数量 %s，只读取前 %s 个接口",
+                indices,
+                self.effort_dim,
+                sensor_count,
+                sensor_count,
+            )
+            indices = indices[:sensor_count]
+        env_read_hz = os.environ.get("TASHAN_READ_HZ")
+        if env_read_hz:
+            self.read_hz = float(env_read_hz)
+        if self.read_hz <= 0:
+            raise ValueError(f"TASHAN_READ_HZ/read_hz 必须大于 0，当前是 {self.read_hz}")
         self._ch341 = CH341Device()
         self._ch341.open()
         cmd = SensorCommand(self._ch341)
         for index in indices:
             reader = TashanTouchReader(pca_index=index, ch341=self._ch341, cmd=cmd)
-            reader._select_pca_channel()
-            reader._connect_sensor()
+            try:
+                reader._select_pca_channel()
+                reader._connect_sensor()
+            except Exception as exc:
+                logger.warning("跳过 pca_index=%s 的他山传感器，使用 0 填充该路力数据: %s", index, exc)
+                self._reader_slots.append(None)
+                continue
             self._readers.append(reader)
+            self._reader_slots.append(reader)
+        if not self._readers:
+            logger.warning("没有连接到任何他山传感器，record 将继续运行并记录全 0 effort 数据")
+        self._last_effort = [0.0] * self.effort_dim
+        self._last_timestamp = time.perf_counter()
+        self._thread = Thread(target=self._read_loop, name="EffortSensor_read_loop", daemon=True)
+        self._thread.start()
 
     def _default_pca_indices(self) -> list[int]:
         env_indices = os.environ.get("TASHAN_PCA_INDICES")
@@ -414,10 +450,12 @@ class EffortSensor:
         rad = math.radians(float(tf_dir))
         return [tf * math.cos(rad), tf * math.sin(rad), nf]
 
-    def read(self) -> list[float]:
-        """读取每个传感器两个触点的 [fx, fy, fz]，返回长度固定为 ``effort_dim``。"""
+    def _read_once(self) -> list[float]:
         values: list[float] = []
-        for reader in self._readers:
+        for reader in self._reader_slots:
+            if reader is None:
+                values.extend([0.0] * 6)
+                continue
             nf_values, tf_values, tf_dir_values = reader.read_nf_tf_dir()
             for i in range(2):
                 nf = float(nf_values[i]) if i < len(nf_values) else 0.0
@@ -427,10 +465,47 @@ class EffortSensor:
 
         if len(values) < self.effort_dim:
             values.extend([0.0] * (self.effort_dim - len(values)))
-        self._last_effort = values[: self.effort_dim]
-        return list(self._last_effort)
+        return values[: self.effort_dim]
+
+    def _read_loop(self) -> None:
+        period_s = 1.0 / self.read_hz
+        next_read_time = time.perf_counter()
+        while not self._stop_event.is_set():
+            now = time.perf_counter()
+            if now < next_read_time:
+                self._stop_event.wait(next_read_time - now)
+                continue
+            try:
+                values = self._read_once()
+            except Exception as exc:
+                logger.warning("读取他山传感器数据失败，继续使用上一帧力数据: %s", exc)
+                next_read_time += period_s
+                continue
+            with self._lock:
+                self._last_effort = values
+                self._last_timestamp = time.perf_counter()
+            next_read_time += period_s
+            if next_read_time < time.perf_counter() - period_s:
+                next_read_time = time.perf_counter()
+
+    def read(self) -> list[float]:
+        """返回后台线程最近一次读取的 [fx, fy, fz]，长度固定为 ``effort_dim``。"""
+        with self._lock:
+            if self._last_effort is None:
+                self._last_effort = [0.0] * self.effort_dim
+            timestamp = self._last_timestamp
+            values = list(self._last_effort)
+
+        now = time.perf_counter()
+        if timestamp is not None and now - timestamp > 1.0 and now - self._last_stale_warning > 1.0:
+            self._last_stale_warning = now
+            logger.warning("他山传感器最新数据已 %.2fs 未更新，继续使用上一帧力数据", now - timestamp)
+        return values
 
     def close(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
         self._ch341.close()
 
 

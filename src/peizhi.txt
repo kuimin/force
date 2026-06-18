@@ -7,33 +7,48 @@ sudo chmod 666 /dev/ttyUSB0
 ls -l /dev/serial/by-id/
 
 tashan
-sudo rmmod spi_ch341 #删除原本的驱动端口
-sudo insmod /home/robot/tashan/采集脚本/lib/ch341/CH341PAR_LINUX/driver/ch34x_pis.ko #加载他山驱动
-ls -l /dev/ch34x_pis* #检查驱动端口
-sudo chmod 666 /dev/ch34x_pis* #给权限
-TASHAN_PCA_INDICES=4,5 #现在通道
+sudo rmmod spi_ch341
+sudo rmmod ch34x_pis
+sudo insmod /home/robot/tashan/采集脚本/lib/ch341/CH341PAR_LINUX/driver/ch34x_pis.ko
+ls -l /dev/ch34x_pis*
+sudo chmod 666 /dev/ch34x_pis*
+export TASHAN_PCA_INDICES=4
+export TASHAN_READ_HZ=30
 
-python lerobot/scripts/lerobot_record.py \
+摄像头
+python src/lerobot/scripts/lerobot_find_cameras.py opencv
+sudo chmod 666 /dev/video2 /dev/video4 #OpenCV 外接摄像头；/dev/video0 是电脑自带摄像头，不用
+
+python src/lerobot/scripts/lerobot_record.py \
   --robot.type=ur5e \
-  --robot.ip=192.168.1.10 \
+  --robot.ip=192.168.1.11 \
+  --robot.use_gripper=true \
+  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
   --teleop.type=gello \
-  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBE09I7-if00-port0 \
+  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
   --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
-  --dataset.repo_id=kuimin/test_ur_gello \
-  --dataset.single_task="test" \
+  --teleop.include_gripper=true \
+  --dataset.repo_id=kuimin/urforce_20260617_171904 \
+  --dataset.root=/home/robot/.cache/huggingface/lerobot/kuimin/urforce_20260617_171904 \
+  --dataset.single_task="The contact force is too large" \
+  --dataset.fps=30 \
+  --dataset.episode_time_s=60 \
+  --dataset.num_episodes=50 \
   --dataset.record_effort=true \
-  --dataset.effort_dim=12 \
-  --dataset.push_to_hub=false
-
-
-python lerobot/scripts/lerobot_record.py \
-  --robot.type=ur5e \
-  --robot.ip=192.168.1.10 \
-  --teleop.type=gello \
-  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBE09I7-if00-port0 \
-  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
-  --dataset.repo_id=kuimin/test_ur_gello \
-  --dataset.single_task="test" \
-  --dataset.record_effort=false \
   --dataset.push_to_hub=false \
-  --dataset.video=false
+  --resume=true \
+  --display_data=true
+
+遥操作
+python src/lerobot/scripts/lerobot_teleoperate.py \
+  --robot.type=ur5e \
+  --robot.ip=192.168.1.11 \
+  --robot.use_gripper=true \
+  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
+  --fps=30 \
+  --teleop.type=gello \
+  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
+  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
+  --teleop.include_gripper=true \
+  --display_effort=true \
+  --display_data=true

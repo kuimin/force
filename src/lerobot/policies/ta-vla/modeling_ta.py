@@ -591,13 +591,9 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         self.action_dim = config.max_action_dim
         self.effort_dim = config.effort_dim
-        # 模型内部的“动作向量”扩展为 [动作, 未来接触力]。
-        # 这样 flow matching 不只学习动作速度场，也会学习未来力的速度场。
-        self.model_action_dim = self.action_dim + self.effort_dim
 
-        # 输入/输出投影都使用扩展后的维度：前 max_action_dim 是动作，后 effort_dim 是未来接触力。
-        self.action_in_proj = nn.Linear(self.model_action_dim, action_expert_config.width)
-        self.action_out_proj = nn.Linear(action_expert_config.width, self.model_action_dim)
+        self.action_in_proj = nn.Linear(self.action_dim, action_expert_config.width)
+        self.action_out_proj = nn.Linear(action_expert_config.width, self.action_dim)
 
         # 历史接触力先展平，再用一个 MLP 投影到 action expert 的 token 宽度。
         # 这就是“把历史力信息加进模型”的入口。
@@ -719,7 +715,7 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
         return self.effort_proj_out(effort_hidden)[:, None, :]
 
     def embed_suffix(self, noisy_actions, timestep, effort_history: Tensor | None = None):
-        """把历史接触力 token、带噪动作/未来力 token、时间条件一起送入 action expert。"""
+        """把历史接触力 token、带噪动作 token、时间条件一起送入 action expert。"""
         embs = []
         pad_masks = []
         att_masks = []
@@ -734,7 +730,6 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
         )
         time_emb = time_emb.type(dtype=timestep.dtype)
 
-        # noisy_actions 这里实际是 [带噪动作, 带噪未来力]，维度是 max_action_dim + effort_dim。
         def action_proj_func(noisy_actions):
             return self.action_in_proj(noisy_actions)
 
@@ -754,13 +749,13 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
         if effort_history is None:
             raise ValueError("effort_history is required for TA-VLA")
         # 历史力经过 MLP 变成一个 suffix token，放在 action token 前面。
-        # 后面的每个动作/未来力 token 都可以通过 attention 看到这个力 token。
+        # 后面的每个动作 token 都可以通过 attention 看到这个力 token。
         effort_emb = self._project_effort(effort_history.to(dtype=action_time_emb.dtype))
         embs.append(effort_emb)
         pad_masks.append(torch.ones(bsize, 1, dtype=torch.bool, device=timestep.device))
         att_masks += [1]
 
-        # action_time_emb 是 chunk_size 个 token，每个 token 对应一个未来时刻的 [动作, 未来力]。
+        # action_time_emb 是 chunk_size 个 token，每个 token 对应一个未来时刻的动作。
         embs.append(action_time_emb)
         _, action_time_dim = action_time_emb.shape[:2]
         action_time_mask = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=timestep.device)
@@ -824,7 +819,6 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
         def action_out_proj_func(suffix_out):
             return self.action_out_proj(suffix_out)
 
-        # v_t 的最后一维同样是 [动作速度场, 未来力速度场]。
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
         return F.mse_loss(u_t, v_t, reduction="none")
@@ -849,12 +843,10 @@ class TAVLAPytorch(nn.Module):  # see openpi `PI0Pytorch`
         device = tokens.device
 
         if noise is None:
-            # 推理时也在扩展空间里去噪：[动作, 未来力]。
-            # 外层 policy 最后只截取动作部分作为控制输出。
             actions_shape = (
                 bsize,
                 self.config.chunk_size,
-                self.model_action_dim,
+                self.action_dim,
             )
             noise = self.sample_noise(actions_shape, device)
 
@@ -1278,10 +1270,8 @@ class TAVLAPolicy(PreTrainedPolicy):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         return actions
 
-    def prepare_effort(self, batch, *, require_future: bool) -> tuple[Tensor, Tensor | None]:
+    def prepare_effort(self, batch) -> Tensor:
         # 统一整理 batch["observation.effort"]。
-        # require_future=False 用于推理：只取历史力作为条件。
-        # require_future=True 用于训练：还要取未来力作为辅助预测目标。
         device = next(self.parameters()).device
         history_len = len(self.config.effort_history)
         effort = batch.get(OBS_EFFORT)
@@ -1301,18 +1291,7 @@ class TAVLAPolicy(PreTrainedPolicy):
 
         # 前 history_len 帧是历史力条件，会被 _project_effort 变成一个力 token。
         effort_history = effort[:, :history_len, :]
-        if not require_future:
-            return effort_history, None
-
-        # 训练时，历史窗口之后的 chunk_size 帧是未来力标签。
-        future_start = history_len
-        future_end = future_start + self.config.chunk_size
-        if effort.shape[1] < future_end:
-            raise ValueError(
-                f"Expected {OBS_EFFORT} with history+future length {future_end}, got {effort.shape[1]}"
-            )
-        future_effort = effort[:, future_start:future_end, :]
-        return effort_history, future_effort
+        return effort_history
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -1340,13 +1319,11 @@ class TAVLAPolicy(PreTrainedPolicy):
         images, img_masks = self._preprocess_images(batch)
         tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
 
-        # 推理阶段只需要历史力作为条件，不需要未来力标签。
-        effort_history, _ = self.prepare_effort(batch, require_future=False)
+        effort_history = self.prepare_effort(batch)
 
-        # 模型内部会在 [动作, 未来力] 空间里采样；这里把历史力传进去作为条件。
+        # 模型只在动作空间里采样；历史力作为 action expert 的条件 token。
         actions = self.model.sample_actions(images, img_masks, tokens, masks, effort_history=effort_history, **kwargs)
 
-        # 控制机器人时只返回动作维度；内部预测出来的未来力不作为动作输出。
         original_action_dim = self.config.output_features[ACTION].shape[0]
         actions = actions[:, :, :original_action_dim]
 
@@ -1366,10 +1343,7 @@ class TAVLAPolicy(PreTrainedPolicy):
         tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
 
         actions = self.prepare_action(batch)
-        # 训练阶段把接触力拆成两部分：历史力做输入条件，未来力做监督目标。
-        effort_history, future_effort = self.prepare_effort(batch, require_future=True)
-        # 把真实动作和真实未来力拼在一起，作为 flow matching 要还原的目标。
-        actions = torch.cat([actions, future_effort], dim=-1)
+        effort_history = self.prepare_effort(batch)
 
         noise = self.model.sample_noise(actions.shape, actions.device)
         time = self.model.sample_time(actions.shape[0], actions.device)
@@ -1383,14 +1357,8 @@ class TAVLAPolicy(PreTrainedPolicy):
             "loss_per_dim": action_losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
         }
 
-        # losses 的最后一维也是 [动作 loss, 未来力 loss]。
-        # 动作 loss 负责控制表现；未来力 loss 是辅助任务，帮助 action expert 学到接触动力学信息。
-        effort_start = self.config.max_action_dim
-        effort_end = effort_start + self.config.effort_dim
-        effort_losses = losses[:, :, effort_start:effort_end]
-        combined_losses = action_losses.mean(dim=-1) + self.config.effort_loss_weight * effort_losses.mean(dim=-1)
+        combined_losses = action_losses.mean(dim=-1)
         loss_dict["action_loss"] = action_losses.mean().item()
-        loss_dict["effort_loss"] = effort_losses.mean().item()
 
         if reduction == "none":
             per_sample_loss = combined_losses.mean(dim=1)

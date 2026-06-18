@@ -58,7 +58,7 @@ def resolve_delta_timestamps(
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         effort_delta_indices = getattr(cfg, "effort_delta_indices", None)
         if key == OBS_EFFORT and effort_delta_indices is not None:
-            delta_timestamps[key] = [i / ds_meta.fps for i in effort_delta_indices]
+            delta_timestamps[key] = [i if isinstance(i, float) else i / ds_meta.fps for i in effort_delta_indices]
         elif key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
 
