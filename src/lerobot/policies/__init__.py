@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+
 from lerobot.utils.action_interpolator import ActionInterpolator as ActionInterpolator
 
 from .act.configuration_act import ACTConfig as ACTConfig
@@ -33,6 +35,8 @@ from .vqbet.configuration_vqbet import VQBeTConfig as VQBeTConfig
 from .wall_x.configuration_wall_x import WallXConfig as WallXConfig
 from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 
+TAVLAConfig = importlib.import_module("lerobot.policies.ta-vla.configuration_ta").TAVLAConfig
+
 # NOTE: Policy modeling classes (e.g., GaussianActorPolicy) are intentionally NOT re-exported here.
 # They have heavy optional dependencies and are loaded lazily via get_policy_class().
 # Import directly: ``from lerobot.policies.gaussian_actor.modeling_gaussian_actor import GaussianActorPolicy``
@@ -49,6 +53,7 @@ __all__ = [
     "PI0Config",
     "PI0FastConfig",
     "PI05Config",
+    "TAVLAConfig",
     "SmolVLAConfig",
     "TDMPCConfig",
     "VQBeTConfig",
