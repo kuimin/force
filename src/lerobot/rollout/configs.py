@@ -226,6 +226,10 @@ class RolloutConfig:
     device: str | None = None
     task: str = ""
     display_data: bool = False
+    display_effort: bool = False
+    effort_dim: int = 6
+    # Names for effort channels. Multiples of 3 default to fx/fy/fz groups.
+    effort_names: list[str] | None = None
     # Display data on a remote Rerun server
     display_ip: str | None = None
     # Port of the remote Rerun server
@@ -249,6 +253,19 @@ class RolloutConfig:
     torch_compile_backend: str = "inductor"
     torch_compile_mode: str = "default"
     compile_warmup_inferences: int = 2
+
+    def get_effort_names(self) -> list[str]:
+        if self.effort_names is None and self.effort_dim % 3 == 0:
+            names = []
+            for point_idx in range(self.effort_dim // 3):
+                names.extend([f"fx_{point_idx}", f"fy_{point_idx}", f"fz_{point_idx}"])
+        else:
+            names = self.effort_names or [f"effort_{i}" for i in range(self.effort_dim)]
+        if len(names) != self.effort_dim:
+            raise ValueError(f"effort_names length {len(names)} must match effort_dim {self.effort_dim}")
+        if len(set(names)) != len(names):
+            raise ValueError("effort_names must be unique")
+        return names
 
     def __post_init__(self):
         """Validate config invariants and load the policy config from ``--policy.path``."""

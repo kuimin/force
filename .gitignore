@@ -165,6 +165,11 @@ wandb/
 # Data folders
 data/
 outputs/
+hf_models/
+.hf_cache/
+.sentry-native/
+third_party/
+src/lerobot/policies/*.zip
 
 # Translations
 *.mo

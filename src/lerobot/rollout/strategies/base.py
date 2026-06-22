@@ -34,8 +34,19 @@ class BaseStrategy(RolloutStrategy):
     before reaching the robot.
     """
 
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self._effort_sensor = None
+        self._effort_names: list[str] | None = None
+
     def setup(self, ctx: RolloutContext) -> None:
         """Initialise the inference engine."""
+        cfg = ctx.runtime.cfg
+        if cfg.display_effort:
+            from lerobot.sensors import make_effort_sensor
+
+            self._effort_names = cfg.get_effort_names()
+            self._effort_sensor = make_effort_sensor(cfg.effort_dim, self._effort_names)
         self._init_engine(ctx)
         logger.info("Base strategy ready")
 
@@ -60,6 +71,16 @@ class BaseStrategy(RolloutStrategy):
                 break
 
             obs = robot.get_observation()
+            if self._effort_sensor is not None:
+                if self._effort_names is None:
+                    raise ValueError("effort_names must be set when effort sensor is enabled")
+                effort = list(self._effort_sensor.read())
+                if len(effort) != len(self._effort_names):
+                    raise ValueError(
+                        f"Effort sensor returned {len(effort)} values, expected {len(self._effort_names)}"
+                    )
+                for name, value in zip(self._effort_names, effort, strict=True):
+                    obs[name] = float(value)
             obs_processed = self._process_observation_and_notify(ctx.processors, obs)
 
             if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
@@ -78,6 +99,9 @@ class BaseStrategy(RolloutStrategy):
 
     def teardown(self, ctx: RolloutContext) -> None:
         """Disconnect hardware and stop inference."""
+        if self._effort_sensor is not None:
+            self._effort_sensor.close()
+            self._effort_sensor = None
         self._teardown_hardware(
             ctx.hardware,
             return_to_initial_position=ctx.runtime.cfg.return_to_initial_position,

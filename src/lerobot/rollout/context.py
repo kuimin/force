@@ -46,6 +46,7 @@ from lerobot.processor import (
 from lerobot.processor.relative_action_processor import RelativeActionsProcessorStep
 from lerobot.robots import make_robot_from_config
 from lerobot.teleoperators import Teleoperator, make_teleoperator_from_config
+from lerobot.utils.constants import OBS_STR
 from lerobot.utils.feature_utils import combine_feature_dicts, hw_to_dataset_features
 
 from .configs import BaseStrategyConfig, DAggerStrategyConfig, RolloutConfig
@@ -296,8 +297,21 @@ def build_rollout_context(
         initial_features=create_initial_features(observation=observation_features_hw),
         use_videos=cfg.dataset.video if cfg.dataset else True,
     )
-    dataset_features = combine_feature_dicts(action_dataset_features, observation_dataset_features)
+    effort_dataset_features = {}
+    if cfg.display_effort:
+        effort_dataset_features[f"{OBS_STR}.effort"] = {
+            "dtype": "float32",
+            "shape": (cfg.effort_dim,),
+            "names": cfg.get_effort_names(),
+        }
+
+    dataset_features = combine_feature_dicts(
+        action_dataset_features,
+        observation_dataset_features,
+        effort_dataset_features,
+    )
     hw_features = hw_to_dataset_features(observation_features_hw, "observation")
+    hw_features = combine_feature_dicts(hw_features, effort_dataset_features)
     raw_action_keys = list(action_features_hw.keys())
     policy_action_names = getattr(policy_config, "action_feature_names", None)
     ordered_action_keys = _resolve_action_key_order(
