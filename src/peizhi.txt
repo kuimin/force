@@ -52,3 +52,48 @@ python src/lerobot/scripts/lerobot_teleoperate.py \
   --teleop.include_gripper=true \
   --display_effort=true \
   --display_data=true
+
+训练
+python -m lerobot.scripts.lerobot_train \
+  --dataset.repo_id=kuimin/urforce_20260617_171904 \
+  --dataset.root=/root/autodl-tmp/urforce_20260617_171904 \
+  --policy.type=ta-vla \
+  --output_dir=./outputs/ta_vla_force_frozen_vlm \
+  --job_name=ta_vla_force_frozen_vlm \
+  --policy.repo_id=kuimin/ta_vla_force_frozen_vlm \
+  --policy.push_to_hub=true \
+  --policy.pretrained_path=/root/autodl-tmp/hf_models/lerobot/pi05_base \
+  --policy.dtype=bfloat16 \
+  --policy.device=cuda \
+  --policy.gradient_checkpointing=true \
+  --policy.compile_model=false \
+  --policy.freeze_vision_encoder=true \
+  --policy.train_expert_only=true \
+  --steps=10000 \
+  --save_freq=1000 \
+  --batch_size=32 \
+  --wandb.enable=true
+
+rollout
+# 如果需要走本机代理下载 Hugging Face 模型，httpx 不支持 socks://，这里用 http://。
+export HTTP_PROXY=http://127.0.0.1:7890
+export HTTPS_PROXY=http://127.0.0.1:7890
+unset ALL_PROXY all_proxy
+
+python src/lerobot/scripts/lerobot_rollout.py \
+  --strategy.type=base \
+  --policy.path=/home/robot/lerobot/hf_models/ta_vla_force_frozen_vlm/checkpoints/002000/pretrained_model \
+  --inference.type=rtc \
+  --inference.rtc.execution_horizon=10 \
+  --inference.rtc.max_guidance_weight=10.0 \
+  --robot.type=ur5e \
+  --robot.ip=192.168.1.11 \
+  --robot.use_gripper=true \
+  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
+  --fps=30 \
+  --device=cuda \
+  --display_effort=true \
+  --effort_dim=6 \
+  --display_data=true \
+  --task="The contact force is normal" \
+  --duration=60
