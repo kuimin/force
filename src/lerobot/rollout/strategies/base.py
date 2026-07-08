@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 
+import numpy as np
+
+from lerobot.utils.constants import OBS_EFFORT
 from lerobot.utils.robot_utils import precise_sleep
 
 from ..context import RolloutContext
@@ -38,6 +42,7 @@ class BaseStrategy(RolloutStrategy):
         super().__init__(config)
         self._effort_sensor = None
         self._effort_names: list[str] | None = None
+        self._effort_history = None
 
     def setup(self, ctx: RolloutContext) -> None:
         """Initialise the inference engine."""
@@ -47,6 +52,8 @@ class BaseStrategy(RolloutStrategy):
 
             self._effort_names = cfg.get_effort_names()
             self._effort_sensor = make_effort_sensor(cfg.effort_dim, self._effort_names)
+            history_len = len(getattr(ctx.policy.policy.config, "effort_history", (0,)))
+            self._effort_history = deque(maxlen=max(1, history_len))
         self._init_engine(ctx)
         logger.info("Base strategy ready")
 
@@ -81,6 +88,14 @@ class BaseStrategy(RolloutStrategy):
                     )
                 for name, value in zip(self._effort_names, effort, strict=True):
                     obs[name] = float(value)
+                effort_frame = np.asarray(effort, dtype=np.float32)
+                if self._effort_history is not None:
+                    if len(self._effort_history) == 0:
+                        while len(self._effort_history) < self._effort_history.maxlen:
+                            self._effort_history.append(effort_frame.copy())
+                    else:
+                        self._effort_history.append(effort_frame)
+                    obs[OBS_EFFORT] = np.stack(tuple(self._effort_history), axis=0)
             obs_processed = self._process_observation_and_notify(ctx.processors, obs)
 
             if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
@@ -102,6 +117,7 @@ class BaseStrategy(RolloutStrategy):
         if self._effort_sensor is not None:
             self._effort_sensor.close()
             self._effort_sensor = None
+        self._effort_history = None
         self._teardown_hardware(
             ctx.hardware,
             return_to_initial_position=ctx.runtime.cfg.return_to_initial_position,

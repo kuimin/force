@@ -1,5 +1,5 @@
 sudo ip addr flush dev enp2s0
-sudo ip addr add 192.168.1.100/24 dev enp2s0
+sudo ip addr add 192.168.1.165/24 dev enp2s0
 sudo ip link set enp2s0 up
 
 gello
@@ -44,7 +44,7 @@ python src/lerobot/scripts/lerobot_teleoperate.py \
   --robot.type=ur5e \
   --robot.ip=192.168.1.11 \
   --robot.use_gripper=true \
-  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
+  --robot.cameras='{ front: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, side: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
   --fps=30 \
   --teleop.type=gello \
   --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
@@ -82,18 +82,41 @@ unset ALL_PROXY all_proxy
 
 python src/lerobot/scripts/lerobot_rollout.py \
   --strategy.type=base \
-  --policy.path=/home/robot/lerobot/hf_models/ta_vla_force_frozen_vlm/checkpoints/002000/pretrained_model \
+  --policy.path=/home/atom/.cache/huggingface/hub/models--kuimin--ta_vla_force_frozen_vlm/snapshots/d50fb343bb71dee9d1be41c9142451c156729754/checkpoints/002000/pretrained_model \
   --inference.type=rtc \
   --inference.rtc.execution_horizon=10 \
-  --inference.rtc.max_guidance_weight=10.0 \
+  --inference.rtpython scripts/gello_get_offset.py \
+  --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
+  --start-joints 0 0 0 0 0 0 \
+  --joint-signs 1 -1 1 -1 1 1 \
+  --gripper truec.max_guidance_weight=10.0 \
   --robot.type=ur5e \
   --robot.ip=192.168.1.11 \
   --robot.use_gripper=true \
-  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
+  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video6", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
   --fps=30 \
   --device=cuda \
   --display_effort=true \
   --effort_dim=6 \
-  --display_data=true \
+  --display_data=false \
   --task="The contact force is normal" \
   --duration=60
+
+  cd /home/robot/lerobot/third_party/gello_software
+  python scripts/gello_get_offset.py \
+  --port /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
+  --start-joints 0 0 0 0 0 0 \
+  --joint-signs 1 -1 1 -1 1 1 \
+  --gripper true
+
+  cd /home/robot/lerobot
+
+python -m lerobot.scripts.lerobot_teleoperate \
+  --robot.type=tj \
+  --robot.ip=192.168.1.10 \
+  --robot.arm=A \
+  --robot.velocity_percent=10 \
+  --robot.acceleration_percent=10 \
+  --teleop.type=dm_exton_tj_ik \
+  --teleop.arm=A \
+  --teleop.pose_topic=/target_robot/left_ee/target

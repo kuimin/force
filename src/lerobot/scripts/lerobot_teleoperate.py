@@ -84,6 +84,7 @@ from lerobot.robots import (  # noqa: F401
     reachy2,
     rebot_b601_follower,
     so_follower,
+    tj,
     unitree_g1 as unitree_g1_robot,
     ur5e,
 )
@@ -93,6 +94,7 @@ from lerobot.teleoperators import (  # noqa: F401
     bi_openarm_leader,
     bi_rebot_102_leader,
     bi_so_leader,
+    dm_exton_tj_ik,
     gamepad,
     gello,
     homunculus,
@@ -205,7 +207,7 @@ def teleop_loop(
                 raise ValueError("effort_names must be provided when effort_sensor is enabled")
             _read_effort_into_observation(obs, effort_sensor, effort_names)
 
-        if robot.name == "unitree_g1":
+        if robot.name in {"unitree_g1", "tj"}:
             teleop.send_feedback(obs)
 
         # Get teleop action

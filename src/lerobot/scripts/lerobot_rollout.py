@@ -167,6 +167,7 @@ from lerobot.robots import (  # noqa: F401
     reachy2,
     rebot_b601_follower,
     so_follower,
+    tj,
     unitree_g1 as unitree_g1_robot,
     ur5e,
 )
@@ -177,6 +178,7 @@ from lerobot.teleoperators import (  # noqa: F401
     bi_openarm_leader,
     bi_rebot_102_leader,
     bi_so_leader,
+    dm_exton_tj_ik,
     homunculus,
     koch_leader,
     omx_leader,

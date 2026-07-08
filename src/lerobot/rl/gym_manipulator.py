@@ -56,6 +56,7 @@ from lerobot.robots import (  # noqa: F401
     RobotConfig,
     make_robot_from_config,
     so_follower,
+    tj,
 )
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower.robot_kinematic_processor import (
@@ -66,6 +67,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     InverseKinematicsRLStep,
 )
 from lerobot.teleoperators import (
+    dm_exton_tj_ik,  # noqa: F401
     gamepad,  # noqa: F401
     keyboard,  # noqa: F401
     make_teleoperator_from_config,

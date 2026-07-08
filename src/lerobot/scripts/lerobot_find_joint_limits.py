@@ -53,12 +53,14 @@ from lerobot.robots import (  # noqa: F401
     openarm_follower,
     rebot_b601_follower,
     so_follower,
+    tj,
 )
 from lerobot.teleoperators import (  # noqa: F401
     TeleoperatorConfig,
     bi_openarm_leader,
     bi_rebot_102_leader,
     bi_so_leader,
+    dm_exton_tj_ik,
     gamepad,
     koch_leader,
     make_teleoperator_from_config,

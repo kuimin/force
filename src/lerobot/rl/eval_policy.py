@@ -23,8 +23,10 @@ from lerobot.robots import (  # noqa: F401
     RobotConfig,
     make_robot_from_config,
     so_follower,
+    tj,
 )
 from lerobot.teleoperators import (
+    dm_exton_tj_ik,  # noqa: F401
     gamepad,  # noqa: F401
     so_leader,  # noqa: F401
 )

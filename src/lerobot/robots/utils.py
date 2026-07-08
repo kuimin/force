@@ -80,6 +80,10 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
         from .ur5e import UR5eRobot
 
         return UR5eRobot(config)
+    elif config.type == "tj":
+        from .tj import TJRobot
+
+        return TJRobot(config)
     elif config.type == "mock_robot":
         from tests.mocks.mock_robot import MockRobot
 

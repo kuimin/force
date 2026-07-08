@@ -38,11 +38,13 @@ from lerobot.robots import (  # noqa: F401
     omx_follower,
     rebot_b601_follower,
     so_follower,
+    tj,
 )
 from lerobot.teleoperators import (  # noqa: F401
     TeleoperatorConfig,
     bi_rebot_102_leader,
     bi_so_leader,
+    dm_exton_tj_ik,
     koch_leader,
     make_teleoperator_from_config,
     omx_leader,
@@ -61,6 +63,7 @@ COMPATIBLE_DEVICES = [
     "so100_leader",
     "so101_follower",
     "so101_leader",
+    "tj",
     "lekiwi",
 ]
 

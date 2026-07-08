@@ -117,6 +117,8 @@ def build_dataset_frame(
     for key, ft in ds_features.items():
         if key in DEFAULT_FEATURES or not key.startswith(prefix):
             continue
+        elif key in values:
+            frame[key] = np.asarray(values[key], dtype=np.float32)
         elif ft["dtype"] == "float32" and len(ft["shape"]) == 1:
             frame[key] = np.array([values[name] for name in ft["names"]], dtype=np.float32)
         elif ft["dtype"] in ["image", "video"]:

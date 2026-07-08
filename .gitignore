@@ -168,7 +168,9 @@ outputs/
 hf_models/
 .hf_cache/
 .sentry-native/
-third_party/
+third_party/*
+!third_party/tj_marvin_sdk/
+!third_party/tj_marvin_sdk/**
 src/lerobot/policies/*.zip
 
 # Translations
