@@ -17,6 +17,8 @@ class FakeMarvinRobot:
     def __init__(self):
         self.connected = False
         self.target = [0.0] * 7
+        self.send_cmd_count = 0
+        self.send_cmd_wait_response_count = 0
 
     def connect(self, _ip):
         self.connected = True
@@ -51,6 +53,11 @@ class FakeMarvinRobot:
         return 1
 
     def send_cmd(self):
+        self.send_cmd_count = getattr(self, "send_cmd_count", 0) + 1
+        return 1
+
+    def send_cmd_wait_response(self, _timeout_ms):
+        self.send_cmd_wait_response_count = getattr(self, "send_cmd_wait_response_count", 0) + 1
         return 1
 
     def set_joint_cmd_pose(self, arm, joints):
@@ -102,6 +109,26 @@ def test_tj_send_action_to_selected_arm(fake_sdk):
     assert sent == action
     assert robot.robot.target_arm == "B"
     assert robot.robot.target == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    assert robot.robot.send_cmd_wait_response_count == 0
+
+
+def test_tj_robotiq_usb_gripper_maps_norm_to_raw_position():
+    robot = TJRobot(
+        TJRobotConfig(
+            ip="127.0.0.1",
+            gripper_backend="robotiq_usb",
+            gripper_send_deadband=0.0,
+        )
+    )
+    robot.robot = object()
+    robot.gripper = MagicMock()
+    robot.gripper.move_norm.return_value = 128
+
+    robot._send_gripper_action(0.5)
+
+    robot.gripper.move_norm.assert_called_once_with(0.5)
+    assert robot._last_gripper_value == 0.5
+    assert robot._last_gripper_state == "128"
 
 
 def test_tj_connect_reports_failure(fake_sdk):

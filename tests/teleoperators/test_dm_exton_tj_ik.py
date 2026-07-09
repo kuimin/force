@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from types import SimpleNamespace
+
 import numpy as np
 
 from lerobot.teleoperators.dm_exton_tj_ik import DMExtonTJIKTeleop, DMExtonTJIKTeleopConfig
@@ -22,12 +24,22 @@ def test_dm_exton_tj_ik_config_defaults_pose_topic_from_arm():
     assert DMExtonTJIKTeleopConfig(pose_topic=None, arm="B", use_clutch=True).clutch_topic == "/clutch/right"
 
 
+def test_right_arm_gripper_uses_second_trigger_position():
+    teleop = DMExtonTJIKTeleop(DMExtonTJIKTeleopConfig(arm="B"))
+
+    teleop._gripper_callback(SimpleNamespace(data=[0.1, 0.75]))
+    action = {}
+    teleop._add_gripper_action(action)
+
+    assert action["gripper.pos"] == 0.75
+
+
 def test_dm_exton_tj_ik_config_defaults_to_float_array_start():
     config = DMExtonTJIKTeleopConfig()
 
     assert config.pose_message_type == "pose_stamped"
     assert config.pose_array_start_index == 7
-    assert config.mapping_mode == "absolute"
+    assert config.mapping_mode == "relative"
     assert config.position_offset_mm == [0.0, 0.0, 0.0]
     assert config.position_scale == 1000.0
     assert config.state_position_scale == 0.001
@@ -77,6 +89,21 @@ def test_relative_mapping_keeps_first_tj_reference_pose():
     assert np.allclose(target, tj_ref)
 
 
+def test_relative_mapping_uses_position_and_relative_orientation():
+    dm_ref = np.eye(4)
+    dm_now = np.eye(4)
+    dm_now[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    dm_now[:3, 3] = [15.0, 18.0, 33.0]
+    tj_ref = np.eye(4)
+    tj_ref[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    tj_ref[:3, 3] = [100.0, 200.0, 300.0]
+
+    target = _map_dm_pose_to_tj_pose(dm_now, dm_ref, tj_ref, "relative")
+
+    assert np.allclose(target[:3, 3], [115.0, 218.0, 333.0])
+    assert np.allclose(target[:3, :3], tj_ref[:3, :3] @ dm_now[:3, :3])
+
+
 def test_position_relative_mapping_uses_dm_position_delta_only():
     dm_ref = np.eye(4)
     dm_ref[:3, 3] = [10.0, 20.0, 30.0]
@@ -109,11 +136,48 @@ def test_pose_increment_mapping_uses_position_and_relative_orientation():
 def test_master_axis_alignment_rotates_z_then_x_for_increment_frame():
     rotation = _master_to_tj_axes_rotation(90.0, -90.0)
     matrix = np.eye(4)
+    matrix[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
     matrix[:3, 3] = [1.0, 0.0, 1.0]
 
     aligned = _change_increment_frame(matrix, rotation)
 
     assert np.allclose(aligned[:3, 3], [0.0, 1.0, -1.0], atol=1e-9)
+    assert np.allclose(aligned[:3, :3], rotation @ matrix[:3, :3] @ rotation.T)
+
+
+def test_default_master_axis_map_matches_dm_to_tj_position_axes():
+    config = DMExtonTJIKTeleopConfig()
+    rotation = np.asarray(config.master_post_axis_map, dtype=np.float64)
+
+    assert np.allclose(rotation @ [1.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+    assert np.allclose(rotation @ [0.0, 1.0, 0.0], [0.0, 0.0, -1.0])
+    assert np.allclose(rotation @ [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+
+
+def test_default_master_orientation_axis_map_matches_dm_to_tj_orientation_axes():
+    config = DMExtonTJIKTeleopConfig()
+    rotation = np.asarray(config.master_orientation_axis_map, dtype=np.float64)
+
+    assert np.allclose(rotation @ [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    assert np.allclose(rotation @ [0.0, 1.0, 0.0], [0.0, 1.0, 0.0])
+    assert np.allclose(rotation @ [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])
+
+
+def test_master_axis_alignment_can_transform_position_and_orientation_separately():
+    position_rotation = np.asarray(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=np.float64
+    )
+    orientation_rotation = np.asarray(
+        [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64
+    )
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    matrix[:3, 3] = [1.0, 2.0, 3.0]
+
+    aligned = _change_increment_frame(matrix, position_rotation, orientation_rotation)
+
+    assert np.allclose(aligned[:3, 3], [1.0, 3.0, -2.0])
+    assert np.allclose(aligned[:3, :3], orientation_rotation @ matrix[:3, :3] @ orientation_rotation.T)
 
 
 def test_absolute_position_mapping_uses_dm_position_and_tj_orientation():

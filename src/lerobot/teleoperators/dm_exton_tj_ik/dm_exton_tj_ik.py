@@ -226,10 +226,15 @@ def _master_to_tj_axes_rotation(
     return post_rotation @ rotation
 
 
-def _change_increment_frame(matrix: np.ndarray, frame_rotation: np.ndarray) -> np.ndarray:
+def _change_increment_frame(
+    matrix: np.ndarray,
+    frame_rotation: np.ndarray,
+    orientation_frame_rotation: np.ndarray | None = None,
+) -> np.ndarray:
     aligned = matrix.copy()
     aligned[:3, 3] = frame_rotation @ matrix[:3, 3]
-    aligned[:3, :3] = frame_rotation @ matrix[:3, :3] @ frame_rotation.T
+    rotation = frame_rotation if orientation_frame_rotation is None else orientation_frame_rotation
+    aligned[:3, :3] = rotation @ matrix[:3, :3] @ rotation.T
     return aligned
 
 
@@ -340,12 +345,16 @@ class DMExtonTJIKTeleop(Teleoperator):
         self.node = None
         self.subscription = None
         self.clutch_subscription = None
+        self.gripper_subscription = None
         self.state_publisher = None
         self.pose_stamped_cls = None
         self._spin_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._latest_pose: tuple[list[float], list[float], int, float] | None = None
+        self._latest_gripper = 0.0
+        self._gripper_count = 0
+        self._last_gripper_log_s = 0.0
         self._last_action: RobotAction | None = None
         self._current_joint_action: RobotAction | None = None
         self._dm_reference_matrix: np.ndarray | None = None
@@ -378,9 +387,18 @@ class DMExtonTJIKTeleop(Teleoperator):
             self.config.master_align_x_deg,
             self.config.master_post_axis_map,
         )
+        self._master_to_tj_orientation_rotation = _master_to_tj_axes_rotation(
+            self.config.master_align_z_deg,
+            self.config.master_align_x_deg,
+            self.config.master_orientation_axis_map,
+        )
         logger.info(
             "DM to TJ axis map=%s",
             np.round(self._master_to_tj_rotation, 6).tolist(),
+        )
+        logger.info(
+            "DM to TJ orientation axis map=%s",
+            np.round(self._master_to_tj_orientation_rotation, 6).tolist(),
         )
 
     def _reset_pose_filter(self) -> None:
@@ -397,7 +415,10 @@ class DMExtonTJIKTeleop(Teleoperator):
 
     @cached_property
     def action_features(self) -> dict[str, type]:
-        return {f"{joint}.pos": float for joint in self.config.joint_names}
+        features = {f"{joint}.pos": float for joint in self.config.joint_names}
+        if self.config.enable_gripper:
+            features[f"{self.config.gripper_name}.pos"] = float
+        return features
 
     @property
     def feedback_features(self) -> dict[str, type]:
@@ -491,6 +512,16 @@ class DMExtonTJIKTeleop(Teleoperator):
             self.clutch_subscription = self.node.create_subscription(
                 Bool, self.config.clutch_topic, self._clutch_callback, 1
             )
+        if self.config.enable_gripper and self.config.gripper_topic is not None:
+            self.gripper_subscription = self.node.create_subscription(
+                Float64MultiArray, self.config.gripper_topic, self._gripper_callback, 1
+            )
+            logger.info(
+                "DM-EXton2 gripper trigger listening on %s[%s] -> %s.pos",
+                self.config.gripper_topic,
+                self.config.gripper_index,
+                self.config.gripper_name,
+            )
         self._stop_event.clear()
         self._spin_thread = threading.Thread(target=self._spin_ros, name=self.config.ros_node_name, daemon=True)
         self._spin_thread.start()
@@ -570,6 +601,32 @@ class DMExtonTJIKTeleop(Teleoperator):
     def _clutch_callback(self, msg: Any) -> None:
         with self._lock:
             self._clutch = bool(msg.data)
+
+    def _gripper_callback(self, msg: Any) -> None:
+        data = list(getattr(msg, "data", []))
+        index = self.config.gripper_index
+        if index is None or index >= len(data):
+            now = time.monotonic()
+            if now - self._last_gripper_log_s >= 1.0:
+                logger.warning(
+                    "Gripper trigger topic %s has %s values; cannot read index %s",
+                    self.config.gripper_topic,
+                    len(data),
+                    index,
+                )
+                self._last_gripper_log_s = now
+            return
+
+        value = float(np.clip(float(data[index]), 0.0, 1.0))
+        if self.config.gripper_invert:
+            value = 1.0 - value
+        with self._lock:
+            self._latest_gripper = value
+            self._gripper_count += 1
+        now = time.monotonic()
+        if self._gripper_count == 1 or now - self._last_gripper_log_s >= 1.0:
+            logger.info("Received gripper trigger %s.pos=%.3f", self.config.gripper_name, value)
+            self._last_gripper_log_s = now
 
     def _timestamp_from_msg(self, msg: Any) -> float | None:
         header = getattr(msg, "header", None)
@@ -721,14 +778,23 @@ class DMExtonTJIKTeleop(Teleoperator):
             return dict(self._last_action)
         joints = list(self._last_ik_joints or self.config.tj_initial_joints or self.config.reference_joints)
         action = {f"{joint}.pos": value for joint, value in zip(self.config.joint_names, joints, strict=True)}
+        self._add_gripper_action(action)
         self._last_action = action
         return dict(action)
 
     def _halt_action_or_reference(self) -> RobotAction:
         if self._current_joint_action is not None:
-            self._last_action = dict(self._current_joint_action)
-            return dict(self._current_joint_action)
+            action = dict(self._current_joint_action)
+            self._add_gripper_action(action)
+            self._last_action = action
+            return dict(action)
         return self._commanded_action_or_reference()
+
+    def _add_gripper_action(self, action: RobotAction) -> None:
+        if not self.config.enable_gripper:
+            return
+        with self._lock:
+            action[f"{self.config.gripper_name}.pos"] = float(self._latest_gripper)
 
     def _apply_clutch_and_soft_start(self, target_matrix: np.ndarray) -> np.ndarray | None:
         now = time.monotonic()
@@ -839,7 +905,11 @@ class DMExtonTJIKTeleop(Teleoperator):
             "relative",
             "position_relative",
         }:
-            dm_matrix = _change_increment_frame(dm_matrix, self._master_to_tj_rotation)
+            dm_matrix = _change_increment_frame(
+                dm_matrix,
+                self._master_to_tj_rotation,
+                self._master_to_tj_orientation_rotation,
+            )
         if not self._prepare_clutch_relative_anchor(dm_matrix):
             return None
         target_matrix = self._target_matrix_from_dm_matrix(dm_matrix, pose_id)
@@ -995,6 +1065,9 @@ class DMExtonTJIKTeleop(Teleoperator):
                 return self._halt_action_or_reference()
             raise RuntimeError(f"TJ IK failed for the latest DM-EXton2 pose: {self._last_ik_failure}")
         action = {f"{joint}.pos": value for joint, value in zip(self.config.joint_names, joints, strict=True)}
+        if self.config.enable_gripper:
+            with self._lock:
+                action[f"{self.config.gripper_name}.pos"] = float(self._latest_gripper)
         self._last_action = action
         return action
 
@@ -1082,6 +1155,7 @@ class DMExtonTJIKTeleop(Teleoperator):
             self.node = None
         self.subscription = None
         self.clutch_subscription = None
+        self.gripper_subscription = None
         self.state_publisher = None
         self.kine = None
         self.fx_kine = None

@@ -27,6 +27,11 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     clutch_topic: str | None = None
     publish_state: bool = True
     state_topic: str | None = None
+    enable_gripper: bool = True
+    gripper_topic: str | None = None
+    gripper_name: str = "gripper"
+    gripper_index: int | None = None
+    gripper_invert: bool = False
 
     joint_names: list[str] = field(
         default_factory=lambda: [
@@ -45,14 +50,14 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     tj_initial_joints: list[float] | None = None
     tj_initial_pose_4x4: list[list[float]] | None = None
     dm_reference_pose: list[float] | None = None
-    mapping_mode: str = "position_relative"
+    mapping_mode: str = "relative"
     zsp_type: int = 0
     zsp_para: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     zsp_angle: float = 0.0
     dgr1: float = 0.05
     dgr2: float = 0.05
 
-    position_scale: float = 500.0  # DM PoseStamped target is meters; TJ IK expects millimeters.
+    position_scale: float = 1000.0  # DM PoseStamped target is meters; TJ IK expects millimeters.
     state_position_scale: float = 0.001  # TJ FK returns millimeters; PoseStamped state is published in meters.
     position_offset_mm: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     target_position_offset_mm: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -70,6 +75,13 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             [1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
             [0.0, -1.0, 0.0],
+        ]
+    )
+    master_orientation_axis_map: list[list[float]] | None = field(
+        default_factory=lambda: [
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
         ]
     )
     mirror_x: bool = False
@@ -98,6 +110,10 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             self.state_topic = f"/target_robot/{side}_ee/state"
         if self.use_clutch and self.clutch_topic is None:
             self.clutch_topic = f"/clutch/{side}"
+        if self.enable_gripper and self.gripper_topic is None:
+            self.gripper_topic = "/trigger_positions"
+        if self.enable_gripper and self.gripper_index is None:
+            self.gripper_index = 0 if self.arm == "A" else 1
         if self.pose_message_type not in {"auto", "pose_stamped", "float_array"}:
             raise ValueError("pose_message_type must be 'auto', 'pose_stamped', or 'float_array'")
         if self.pose_array_start_index < 0:
@@ -108,6 +124,11 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             raise ValueError(f"joint_names must be unique, got {self.joint_names}")
         if len(self.reference_joints) != 7:
             raise ValueError("reference_joints must contain exactly 7 values")
+        if self.enable_gripper:
+            if self.gripper_index is None or self.gripper_index < 0:
+                raise ValueError("gripper_index must be non-negative when enable_gripper is True")
+            if not self.gripper_name:
+                raise ValueError("gripper_name must be non-empty when enable_gripper is True")
         if self.tj_initial_joints is not None and len(self.tj_initial_joints) != 7:
             raise ValueError("tj_initial_joints must contain exactly 7 values")
         if self.tj_initial_pose_4x4 is not None:
@@ -136,6 +157,11 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
         if self.master_post_axis_map is not None:
             if len(self.master_post_axis_map) != 3 or any(len(row) != 3 for row in self.master_post_axis_map):
                 raise ValueError("master_post_axis_map must be None or a 3x3 matrix")
+        if self.master_orientation_axis_map is not None:
+            if len(self.master_orientation_axis_map) != 3 or any(
+                len(row) != 3 for row in self.master_orientation_axis_map
+            ):
+                raise ValueError("master_orientation_axis_map must be None or a 3x3 matrix")
         if self.position_scale <= 0:
             raise ValueError("position_scale must be positive")
         if self.state_position_scale <= 0:
