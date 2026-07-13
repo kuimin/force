@@ -387,12 +387,6 @@ class DMExtonTJIKTeleop(Teleoperator):
             beta=self.config.filter_beta,
             dcutoff=self.config.filter_dcutoff,
         )
-        self._gripper_filter = _OneEuroFilter(
-            freq=self.config.filter_frequency_hz,
-            mincutoff=self.config.gripper_filter_mincutoff,
-            beta=self.config.gripper_filter_beta,
-            dcutoff=self.config.gripper_filter_dcutoff,
-        )
         self._master_to_tj_rotation = _master_to_tj_axes_rotation(
             self.config.master_align_z_deg,
             self.config.master_align_x_deg,
@@ -728,19 +722,15 @@ class DMExtonTJIKTeleop(Teleoperator):
         value = float(np.clip(float(data[index]), 0.0, 1.0))
         if self.config.gripper_invert:
             value = 1.0 - value
-        filtered_value = float(
-            np.clip(self._gripper_filter.filter(np.asarray([value], dtype=np.float64), time.monotonic())[0], 0.0, 1.0)
-        )
         with self._lock:
-            self._latest_gripper = filtered_value
+            self._latest_gripper = value
             self._gripper_count += 1
         now = time.monotonic()
         if self._gripper_count == 1 or now - self._last_gripper_log_s >= 1.0:
             logger.info(
-                "Received gripper trigger %s.pos=%.3f filtered=%.3f",
+                "Received gripper trigger %s.pos=%.3f",
                 self.config.gripper_name,
                 value,
-                filtered_value,
             )
             self._last_gripper_log_s = now
 

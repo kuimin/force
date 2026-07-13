@@ -100,9 +100,6 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     filter_mincutoff: float = 2.5
     filter_beta: float = 0.2
     filter_dcutoff: float = 1.0
-    gripper_filter_mincutoff: float = 0.2
-    gripper_filter_beta: float = 0.01
-    gripper_filter_dcutoff: float = 1.0
 
     def __post_init__(self):
         if self.arm not in {"A", "B"}:
@@ -196,7 +193,3 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             raise ValueError("filter_mincutoff must be positive")
         if self.filter_dcutoff <= 0:
             raise ValueError("filter_dcutoff must be positive")
-        if self.gripper_filter_mincutoff <= 0:
-            raise ValueError("gripper_filter_mincutoff must be positive")
-        if self.gripper_filter_dcutoff <= 0:
-            raise ValueError("gripper_filter_dcutoff must be positive")

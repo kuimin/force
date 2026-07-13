@@ -1,7 +1,7 @@
 # DM-EXton TJ IK Filtering Notes
 
 This note explains where the teleoperator filtering code is added and how the
-gripper filtering works.
+gripper command path works.
 
 ## Pose Filter
 
@@ -53,24 +53,11 @@ So the pose data flow is:
     -> joint action
 ```
 
-## Gripper Filter
+## Gripper Path
 
-The gripper filter was added using the same `_OneEuroFilter` algorithm as the
-pose filter.
-
-The filter object is created in `DMExtonTJIKTeleop.__init__`:
-
-```python
-self._gripper_filter = _OneEuroFilter(
-    freq=self.config.filter_frequency_hz,
-    mincutoff=self.config.gripper_filter_mincutoff,
-    beta=self.config.gripper_filter_beta,
-    dcutoff=self.config.gripper_filter_dcutoff,
-)
-```
-
-The gripper callback reads `/trigger_positions`, clips the value to `[0, 1]`,
-optionally inverts it, filters it, then saves it as `_latest_gripper`:
+The gripper path does not use a filter now. The gripper callback reads
+`/trigger_positions`, clips the value to `[0, 1]`, optionally inverts it, then
+saves it directly as `_latest_gripper`:
 
 ```python
 def _gripper_callback(self, msg: Any) -> None:
@@ -80,16 +67,8 @@ def _gripper_callback(self, msg: Any) -> None:
     if self.config.gripper_invert:
         value = 1.0 - value
 
-    filtered_value = float(
-        np.clip(
-            self._gripper_filter.filter(np.asarray([value], dtype=np.float64), time.monotonic())[0],
-            0.0,
-            1.0,
-        )
-    )
-
     with self._lock:
-        self._latest_gripper = filtered_value
+        self._latest_gripper = value
 ```
 
 The gripper data flow is:
@@ -97,7 +76,6 @@ The gripper data flow is:
 ```text
 /trigger_positions
     -> _gripper_callback()
-    -> _OneEuroFilter.filter()
     -> _latest_gripper
     -> action["gripper.pos"]
     -> TJRobot.send_action()
@@ -119,14 +97,6 @@ filter_beta: float = 0.2
 filter_dcutoff: float = 1.0
 ```
 
-The gripper has its own stronger filter parameters:
-
-```python
-gripper_filter_mincutoff: float = 0.8
-gripper_filter_beta: float = 0.05
-gripper_filter_dcutoff: float = 1.0
-```
-
 These values mean:
 
 ```text
@@ -134,20 +104,6 @@ lower mincutoff -> smoother, slower response
 higher mincutoff -> faster response, less smoothing
 lower beta      -> less speed-based adaptation, more stable
 higher beta     -> follows fast motion more aggressively
-```
-
-For stronger gripper smoothing:
-
-```bash
---teleop.gripper_filter_mincutoff=0.4 \
---teleop.gripper_filter_beta=0.02
-```
-
-For faster gripper response:
-
-```bash
---teleop.gripper_filter_mincutoff=1.2 \
---teleop.gripper_filter_beta=0.08
 ```
 
 ## Current Minimal Teleoperation Command
@@ -170,4 +126,3 @@ python src/lerobot/scripts/lerobot_teleoperate.py \
   --robot.robotiq_usb_port=/dev/ttyUSB0 \
   --teleop.type=dm_exton_tj_ik
 ```
-
