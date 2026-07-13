@@ -36,18 +36,33 @@ class TJRobotConfig(RobotConfig):
     max_relative_target: float | None = 30.0
     enable_gripper_action: bool = True
     gripper_name: str = "gripper"
-    gripper_backend: str = "tj_channel"
-    gripper_command_channel: int | None = None
-    gripper_open_hex: str | None = None
-    gripper_close_hex: str | None = None
-    gripper_close_threshold: float = 0.5
-    gripper_send_deadband: float = 0.02
+    gripper_backend: str = "robotiq_usb"
+    gripper_send_deadband: float = 0.004
     robotiq_usb_port: str = "auto"
     robotiq_usb_device_id: int = 9
-    robotiq_usb_speed: int = 255
+    robotiq_usb_speed: int = 80
     robotiq_usb_force: int = 255
     robotiq_usb_activate_on_connect: bool = True
     robotiq_usb_open_on_connect: bool = False
+    enable_dmtac_images: bool = False
+    enable_dmtac_force: bool = False
+    enable_dmtac_images_with_force: bool = True
+    dmtac_dev_ids: list[int | str] = field(default_factory=lambda: ["auto"])
+    dmtac_auto_count: int = 2
+    dmtac_sdk_dir: Path | None = Path("/home/robot/daimeng/DM-Tac-SDK/SDK_Publish_V1.2.13.1")
+    dmtac_backend: str = "cpu"
+    dmtac_mode: str = "high"
+    dmtac_max_fps: int = 120
+    dmtac_show_fps: bool = False
+    dmtac_cpu_fallback: bool = True
+    dmtac_image_height: int = 240
+    dmtac_image_width: int = 320
+    dmtac_image_channels: int = 3
+    dmtac_force_dim: int = 6
+    dmtac_wait_timeout_ms: int = 500
+    dmtac_remote_addr: str = "192.168.127.10:50051"
+    dmtac_pc_host: str = "0.0.0.0"
+    dmtac_pc_port: int = 60000
 
     velocity_percent: int = 40
     acceleration_percent: int = 40
@@ -58,6 +73,7 @@ class TJRobotConfig(RobotConfig):
     action_response_timeout_ms: int = 100
     log_switch: bool = False
     local_log_switch: bool = False
+    silent_sdk: bool = True
     disable_on_disconnect: bool = True
 
     def __post_init__(self):
@@ -76,15 +92,8 @@ class TJRobotConfig(RobotConfig):
         if self.enable_gripper_action:
             if not self.gripper_name:
                 raise ValueError("gripper_name must be non-empty when enable_gripper_action is True")
-            if self.gripper_backend not in {"tj_channel", "robotiq_usb"}:
-                raise ValueError("gripper_backend must be 'tj_channel' or 'robotiq_usb'")
-            if (
-                self.gripper_command_channel is not None
-                and self.gripper_command_channel not in {1, 2, 3}
-            ):
-                raise ValueError("gripper_command_channel must be 1 (CAN/CANFD), 2 (COM1), or 3 (COM2)")
-            if not 0.0 <= self.gripper_close_threshold <= 1.0:
-                raise ValueError("gripper_close_threshold must be in [0, 1]")
+            if self.gripper_backend != "robotiq_usb":
+                raise ValueError("gripper_backend must be 'robotiq_usb'")
             if self.gripper_send_deadband < 0:
                 raise ValueError("gripper_send_deadband must be non-negative")
             if not 1 <= self.robotiq_usb_device_id <= 247:
@@ -95,6 +104,30 @@ class TJRobotConfig(RobotConfig):
             }.items():
                 if not 0 <= value <= 255:
                     raise ValueError(f"{name} must be in [0, 255], got {value}")
+        if self.enable_dmtac_force and self.enable_dmtac_images_with_force:
+            self.enable_dmtac_images = True
+        if self.enable_dmtac_images or self.enable_dmtac_force:
+            if not self.dmtac_dev_ids:
+                raise ValueError(
+                    "dmtac_dev_ids must contain at least one sensor when enable_dmtac_images or enable_dmtac_force is True"
+                )
+            if self.dmtac_auto_count <= 0:
+                raise ValueError("dmtac_auto_count must be positive")
+            if self.dmtac_mode.lower() not in {"standard", "high"}:
+                raise ValueError("dmtac_mode must be 'standard' or 'high'")
+            if self.dmtac_max_fps <= 0:
+                raise ValueError("dmtac_max_fps must be positive")
+            if self.dmtac_wait_timeout_ms <= 0:
+                raise ValueError("dmtac_wait_timeout_ms must be positive")
+            if self.dmtac_force_dim <= 0:
+                raise ValueError("dmtac_force_dim must be positive")
+            for name, value in {
+                "dmtac_image_height": self.dmtac_image_height,
+                "dmtac_image_width": self.dmtac_image_width,
+                "dmtac_image_channels": self.dmtac_image_channels,
+            }.items():
+                if value <= 0:
+                    raise ValueError(f"{name} must be positive")
         for name, value in {
             "velocity_percent": self.velocity_percent,
             "acceleration_percent": self.acceleration_percent,

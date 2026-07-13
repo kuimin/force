@@ -27,7 +27,10 @@ import numpy as np
 
 from lerobot.configs import FeatureType, PolicyFeature
 
-from .constants import ACTION, DEFAULT_FEATURES, OBS_ENV_STATE, OBS_STR
+from .constants import ACTION, DEFAULT_FEATURES, OBS_ENV_STATE, OBS_STR, OBS_TACTILE_IMAGES
+
+
+TACTILE_IMAGE_PREFIXES = ("dmtac_", "tactile_")
 
 
 def _validate_feature_names(features: dict[str, dict]) -> None:
@@ -86,7 +89,12 @@ def hw_to_dataset_features(
         }
 
     for key, shape in cam_fts.items():
-        features[f"{prefix}.images.{key}"] = {
+        image_prefix = (
+            OBS_TACTILE_IMAGES
+            if prefix == OBS_STR and key.startswith(TACTILE_IMAGE_PREFIXES)
+            else f"{prefix}.images"
+        )
+        features[f"{image_prefix}.{key}"] = {
             "dtype": "video" if use_video else "image",
             "shape": shape,
             "names": ["height", "width", "channels"],
@@ -122,7 +130,10 @@ def build_dataset_frame(
         elif ft["dtype"] == "float32" and len(ft["shape"]) == 1:
             frame[key] = np.array([values[name] for name in ft["names"]], dtype=np.float32)
         elif ft["dtype"] in ["image", "video"]:
-            frame[key] = values[key.removeprefix(f"{prefix}.images.")]
+            if key.startswith(f"{prefix}.images."):
+                frame[key] = values[key.removeprefix(f"{prefix}.images.")]
+            elif key.startswith(f"{OBS_TACTILE_IMAGES}."):
+                frame[key] = values[key.removeprefix(f"{OBS_TACTILE_IMAGES}.")]
 
     return frame
 

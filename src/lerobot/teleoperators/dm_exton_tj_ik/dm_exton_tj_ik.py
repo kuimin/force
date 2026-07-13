@@ -311,7 +311,8 @@ def _map_dm_pose_to_tj_pose(
     if mapping_mode == "relative":
         target = tj_reference_matrix.copy()
         target[:3, 3] = tj_reference_matrix[:3, 3] + (dm_matrix[:3, 3] - dm_reference_matrix[:3, 3])
-        target[:3, :3] = tj_reference_matrix[:3, :3] @ (dm_reference_matrix[:3, :3].T @ dm_matrix[:3, :3])
+        dm_delta_in_base = dm_matrix[:3, :3] @ dm_reference_matrix[:3, :3].T
+        target[:3, :3] = tj_reference_matrix[:3, :3] @ dm_delta_in_base
         return target
     raise ValueError(f"Unsupported mapping_mode: {mapping_mode}")
 
@@ -365,9 +366,13 @@ class DMExtonTJIKTeleop(Teleoperator):
         self._last_ik_failure: str | None = None
         self._last_ik_joints: list[float] | None = None
         self._current_tj_matrix: np.ndarray | None = None
+        self._last_aligned_dm_matrix: np.ndarray | None = None
+        self._last_target_matrix: np.ndarray | None = None
         self._tj_reference_from_feedback = False
         self._clutch = not self.config.use_clutch
         self._prev_clutch = self._clutch
+        self._pending_clutch_anchor = False
+        self._clutch_anchor_begin_s: float | None = None
         self._soft_start_anchor_matrix: np.ndarray | None = None
         self._soft_start_begin_s: float | None = None
         self._last_debug_log_s = 0.0
@@ -382,6 +387,12 @@ class DMExtonTJIKTeleop(Teleoperator):
             beta=self.config.filter_beta,
             dcutoff=self.config.filter_dcutoff,
         )
+        self._gripper_filter = _OneEuroFilter(
+            freq=self.config.filter_frequency_hz,
+            mincutoff=self.config.gripper_filter_mincutoff,
+            beta=self.config.gripper_filter_beta,
+            dcutoff=self.config.gripper_filter_dcutoff,
+        )
         self._master_to_tj_rotation = _master_to_tj_axes_rotation(
             self.config.master_align_z_deg,
             self.config.master_align_x_deg,
@@ -392,14 +403,111 @@ class DMExtonTJIKTeleop(Teleoperator):
             self.config.master_align_x_deg,
             self.config.master_orientation_axis_map,
         )
-        logger.info(
+        logger.debug(
             "DM to TJ axis map=%s",
             np.round(self._master_to_tj_rotation, 6).tolist(),
         )
-        logger.info(
+        logger.debug(
             "DM to TJ orientation axis map=%s",
             np.round(self._master_to_tj_orientation_rotation, 6).tolist(),
         )
+
+    def get_pose_log_snapshot(self) -> dict[str, float | int | bool | None]:
+        with self._lock:
+            latest_pose = self._latest_pose
+            clutch = bool(self._clutch)
+            gripper = float(self._latest_gripper)
+
+        row: dict[str, float | int | bool | None] = {
+            "clutch": clutch,
+            "gripper": gripper,
+            "dm_pose_id": None,
+            "dm_age_s": None,
+            "dm_x_m": None,
+            "dm_y_m": None,
+            "dm_z_m": None,
+            "dm_qx": None,
+            "dm_qy": None,
+            "dm_qz": None,
+            "dm_qw": None,
+            "tj_x_mm": None,
+            "tj_y_mm": None,
+            "tj_z_mm": None,
+            "tj_qx": None,
+            "tj_qy": None,
+            "tj_qz": None,
+            "tj_qw": None,
+            "dm_aligned_x_mm": None,
+            "dm_aligned_y_mm": None,
+            "dm_aligned_z_mm": None,
+            "dm_aligned_qx": None,
+            "dm_aligned_qy": None,
+            "dm_aligned_qz": None,
+            "dm_aligned_qw": None,
+            "target_x_mm": None,
+            "target_y_mm": None,
+            "target_z_mm": None,
+            "target_qx": None,
+            "target_qy": None,
+            "target_qz": None,
+            "target_qw": None,
+        }
+        if latest_pose is not None:
+            position, quat, pose_id, received_s = latest_pose
+            row.update(
+                {
+                    "dm_pose_id": int(pose_id),
+                    "dm_age_s": float(time.monotonic() - received_s),
+                    "dm_x_m": float(position[0]),
+                    "dm_y_m": float(position[1]),
+                    "dm_z_m": float(position[2]),
+                    "dm_qx": float(quat[0]),
+                    "dm_qy": float(quat[1]),
+                    "dm_qz": float(quat[2]),
+                    "dm_qw": float(quat[3]),
+                }
+            )
+
+        if self._current_tj_matrix is not None:
+            quat = _matrix_to_quat_xyzw(self._current_tj_matrix[:3, :3])
+            row.update(
+                {
+                    "tj_x_mm": float(self._current_tj_matrix[0, 3]),
+                    "tj_y_mm": float(self._current_tj_matrix[1, 3]),
+                    "tj_z_mm": float(self._current_tj_matrix[2, 3]),
+                    "tj_qx": float(quat[0]),
+                    "tj_qy": float(quat[1]),
+                    "tj_qz": float(quat[2]),
+                    "tj_qw": float(quat[3]),
+                }
+            )
+        if self._last_aligned_dm_matrix is not None:
+            quat = _matrix_to_quat_xyzw(self._last_aligned_dm_matrix[:3, :3])
+            row.update(
+                {
+                    "dm_aligned_x_mm": float(self._last_aligned_dm_matrix[0, 3]),
+                    "dm_aligned_y_mm": float(self._last_aligned_dm_matrix[1, 3]),
+                    "dm_aligned_z_mm": float(self._last_aligned_dm_matrix[2, 3]),
+                    "dm_aligned_qx": float(quat[0]),
+                    "dm_aligned_qy": float(quat[1]),
+                    "dm_aligned_qz": float(quat[2]),
+                    "dm_aligned_qw": float(quat[3]),
+                }
+            )
+        if self._last_target_matrix is not None:
+            quat = _matrix_to_quat_xyzw(self._last_target_matrix[:3, :3])
+            row.update(
+                {
+                    "target_x_mm": float(self._last_target_matrix[0, 3]),
+                    "target_y_mm": float(self._last_target_matrix[1, 3]),
+                    "target_z_mm": float(self._last_target_matrix[2, 3]),
+                    "target_qx": float(quat[0]),
+                    "target_qy": float(quat[1]),
+                    "target_qz": float(quat[2]),
+                    "target_qw": float(quat[3]),
+                }
+            )
+        return row
 
     def _reset_pose_filter(self) -> None:
         self._pose_filter = _PoseFilter(
@@ -620,12 +728,20 @@ class DMExtonTJIKTeleop(Teleoperator):
         value = float(np.clip(float(data[index]), 0.0, 1.0))
         if self.config.gripper_invert:
             value = 1.0 - value
+        filtered_value = float(
+            np.clip(self._gripper_filter.filter(np.asarray([value], dtype=np.float64), time.monotonic())[0], 0.0, 1.0)
+        )
         with self._lock:
-            self._latest_gripper = value
+            self._latest_gripper = filtered_value
             self._gripper_count += 1
         now = time.monotonic()
         if self._gripper_count == 1 or now - self._last_gripper_log_s >= 1.0:
-            logger.info("Received gripper trigger %s.pos=%.3f", self.config.gripper_name, value)
+            logger.info(
+                "Received gripper trigger %s.pos=%.3f filtered=%.3f",
+                self.config.gripper_name,
+                value,
+                filtered_value,
+            )
             self._last_gripper_log_s = now
 
     def _timestamp_from_msg(self, msg: Any) -> float | None:
@@ -832,6 +948,8 @@ class DMExtonTJIKTeleop(Teleoperator):
 
         if not clutch:
             self._prev_clutch = False
+            self._pending_clutch_anchor = False
+            self._clutch_anchor_begin_s = None
             self._soft_start_anchor_matrix = None
             self._soft_start_begin_s = None
             return False
@@ -839,16 +957,33 @@ class DMExtonTJIKTeleop(Teleoperator):
         if self._prev_clutch:
             return True
 
-        reference = (
-            self._current_tj_matrix.copy()
-            if self._current_tj_matrix is not None
-            else self._tj_reference_matrix.copy()
-            if self._tj_reference_matrix is not None
-            else None
-        )
+        reference = self._current_tj_matrix.copy() if self._current_tj_matrix is not None else None
         if reference is None:
-            return True
+            now = time.monotonic()
+            if now - self._last_wait_log_s >= 1.0:
+                logger.warning("Waiting for current TJ feedback before clutch anchor; holding current action")
+                self._last_wait_log_s = now
+            return False
 
+        now = time.monotonic()
+        if not self._pending_clutch_anchor:
+            self._pending_clutch_anchor = True
+            self._clutch_anchor_begin_s = now
+            self._soft_start_anchor_matrix = reference.copy()
+            self._soft_start_begin_s = now
+
+        self._tj_reference_matrix = reference
+        if self.config.mapping_mode in {"relative", "position_relative"}:
+            self._dm_reference_matrix = dm_matrix.copy()
+        elif self.config.mapping_mode in {"position_increment", "pose_increment"}:
+            self._dm_increment_accumulated_xyz = np.zeros(3, dtype=np.float64)
+            self._dm_increment_accumulated_matrix = np.eye(4, dtype=np.float64)
+
+        if self._clutch_anchor_begin_s is not None and now - self._clutch_anchor_begin_s < self.config.clutch_anchor_delay_s:
+            return False
+
+        self._pending_clutch_anchor = False
+        self._clutch_anchor_begin_s = None
         self._tj_reference_matrix = reference
         if self.config.mapping_mode in {"relative", "position_relative"}:
             self._dm_reference_matrix = dm_matrix.copy()
@@ -910,6 +1045,7 @@ class DMExtonTJIKTeleop(Teleoperator):
                 self._master_to_tj_rotation,
                 self._master_to_tj_orientation_rotation,
             )
+        self._last_aligned_dm_matrix = dm_matrix.copy()
         if not self._prepare_clutch_relative_anchor(dm_matrix):
             return None
         target_matrix = self._target_matrix_from_dm_matrix(dm_matrix, pose_id)
@@ -917,6 +1053,7 @@ class DMExtonTJIKTeleop(Teleoperator):
         target_matrix = self._apply_clutch_and_soft_start(target_matrix)
         if target_matrix is None:
             return None
+        self._last_target_matrix = target_matrix.copy()
         joints = self._solve_ik_matrix(target_matrix)
         if joints is not None:
             return joints

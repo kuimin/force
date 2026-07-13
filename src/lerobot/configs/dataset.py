@@ -37,12 +37,6 @@ class DatasetRecordConfig:
     reset_time_s: int | float = 60
     # Number of episodes to record.
     num_episodes: int = 50
-    # 是否在录制时每帧读取触觉/接触力，并保存为 observation.effort。
-    record_effort: bool = False
-    # 单帧力信息维度。默认一片他山传感器，两个触点，每个触点 fx/fy/fz，所以默认 6 维。
-    effort_dim: int = 6
-    # 每个力通道的名字；维度能被 3 整除时默认 fx_0/fy_0/fz_0...，否则默认 effort_0...。
-    effort_names: list[str] | None = None
     # Encode frames in the dataset into video
     video: bool = True
     # Upload dataset to Hugging Face hub.

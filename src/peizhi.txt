@@ -1,7 +1,6 @@
-sudo ip addr flush dev enp2s0
-sudo ip addr add 192.168.1.165/24 dev enp2s0
-sudo ip addr add 192.168.2.165/24 dev enp2s0
 sudo ip link set enp2s0 up
+sudo ip addr replace 192.168.1.165/24 dev enp2s0
+sudo ip addr replace 192.168.2.165/24 dev enp2s0
 sudo ip route replace 192.168.1.190/32 dev enp2s0 src 192.168.1.165
 sudo ip route replace 192.168.2.240/32 dev enp2s0 src 192.168.2.165
 

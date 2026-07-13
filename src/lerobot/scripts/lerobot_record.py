@@ -87,6 +87,7 @@ lerobot-record \\
 """
 
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass
 from pprint import pformat
@@ -156,7 +157,7 @@ from lerobot.teleoperators import (  # noqa: F401
     unitree_g1,
 )
 from lerobot.teleoperators.keyboard import KeyboardTeleop
-from lerobot.utils.constants import ACTION, OBS_EFFORT, OBS_STR
+from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
@@ -167,41 +168,22 @@ from lerobot.utils.utils import (
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 
-def _get_effort_names(effort_dim: int, effort_names: list[str] | None) -> list[str]:
-    # 他山传感器会在 EffortSensor 内部把每个触点的 nf/tf/tfDir 转成 fx/fy/fz。
-    if effort_names is None and effort_dim % 3 == 0:
-        names = []
-        for point_idx in range(effort_dim // 3):
-            names.extend([f"fx_{point_idx}", f"fy_{point_idx}", f"fz_{point_idx}"])
-    else:
-        names = effort_names or [f"effort_{i}" for i in range(effort_dim)]
-    if len(names) != effort_dim:
-        raise ValueError(f"dataset.effort_names length {len(names)} must match dataset.effort_dim {effort_dim}")
-    if len(set(names)) != len(names):
-        raise ValueError("dataset.effort_names must be unique")
-    return names
-
-
-def _add_effort_dataset_feature(dataset_features: dict, effort_dim: int, effort_names: list[str]) -> None:
-    dataset_features[OBS_EFFORT] = {
-        "dtype": "float32",
-        "shape": (effort_dim,),
-        "names": effort_names,
-    }
-
-
-def _read_effort_into_observation(obs: RobotObservation, effort_sensor, effort_names: list[str]) -> None:
-    effort = list(effort_sensor.read())
-    if len(effort) != len(effort_names):
-        raise ValueError(f"Effort sensor returned {len(effort)} values, expected {len(effort_names)}")
-    for name, value in zip(effort_names, effort, strict=True):
-        obs[name] = float(value)
+def _record_display_observation(obs: RobotObservation, robot: Robot) -> RobotObservation:
+    camera_names = set(getattr(robot, "cameras", {}).keys())
+    display_camera_names = camera_names & {"front", "fornt", "top"}
+    display_obs: RobotObservation = {}
+    for key, value in obs.items():
+        if str(key) in display_camera_names:
+            display_obs[key] = value
+    return display_obs
 
 
 @dataclass
 class RecordConfig:
     robot: RobotConfig
     dataset: DatasetRecordConfig
+    # Robot control loop frequency. Dataset saving still uses dataset.fps.
+    control_fps: int | None = 60
     # Teleoperator to control the robot (required)
     teleop: TeleoperatorConfig | None = None
     # Display all cameras on screen
@@ -218,6 +200,8 @@ class RecordConfig:
     resume: bool = False
 
     def __post_init__(self):
+        if self.control_fps is not None and self.control_fps <= 0:
+            raise ValueError("control_fps must be positive when set")
         if self.teleop is None:
             raise ValueError(
                 "A teleoperator is required for recording. "
@@ -257,6 +241,7 @@ def record_loop(
     robot: Robot,
     events: dict,
     fps: int,
+    control_fps: int | None,
     teleop_action_processor: RobotProcessorPipeline[
         tuple[RobotAction, RobotObservation], RobotAction
     ],  # runs after teleop
@@ -272,8 +257,6 @@ def record_loop(
     single_task: str | None = None,
     display_data: bool = False,
     display_compressed_images: bool = False,
-    effort_sensor=None,
-    effort_names: list[str] | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -303,13 +286,18 @@ def record_loop(
                 "For multi-teleop, the list must contain exactly one KeyboardTeleop and one arm teleoperator. Currently only supported for LeKiwi robot."
             )
 
-    control_interval = 1 / fps
+    control_fps = control_fps or fps
+    control_interval = 1 / control_fps
+    dataset_interval = 1 / fps
+    next_dataset_frame_t = 0.0
 
     no_action_count = 0
     timestamp = 0
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
+        timestamp = start_loop_t - start_episode_t
+        should_write_dataset_frame = dataset is not None and timestamp + 1e-9 >= next_dataset_frame_t
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -321,19 +309,13 @@ def record_loop(
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
 
-        if effort_sensor is not None:
-            if effort_names is None:
-                raise ValueError("effort_names must be provided when effort_sensor is enabled")
-            _read_effort_into_observation(obs_processed, effort_sensor, effort_names)
-
-        if dataset is not None:
+        if should_write_dataset_frame:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         # Get action from teleop
         if isinstance(teleop, Teleoperator):
+            teleop.send_feedback(obs)
             act = teleop.get_action()
-            if robot.name == "unitree_g1":
-                teleop.send_feedback(obs)
 
             # Applies a pipeline to the raw teleop action, default is IdentityProcessor
             act_processed_teleop = teleop_action_processor((act, obs))
@@ -366,14 +348,20 @@ def record_loop(
         _sent_action = robot.send_action(robot_action_to_send)
 
         # Write to dataset
-        if dataset is not None:
+        if should_write_dataset_frame:
             action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
             frame = {**observation_frame, **action_frame, "task": single_task}
             dataset.add_frame(frame)
+            next_dataset_frame_t += dataset_interval
+            while timestamp - next_dataset_frame_t >= dataset_interval:
+                next_dataset_frame_t += dataset_interval
 
         if display_data:
+            display_obs = _record_display_observation(obs_processed, robot)
             log_rerun_data(
-                observation=obs_processed, action=action_values, compress_images=display_compressed_images
+                observation=display_obs,
+                action=None,
+                compress_images=display_compressed_images,
             )
 
         dt_s = time.perf_counter() - start_loop_t
@@ -381,7 +369,7 @@ def record_loop(
         sleep_time_s: float = control_interval - dt_s
         if sleep_time_s < 0:
             logging.warning(
-                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target FPS ({fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
+                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target control FPS ({control_fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
             )
 
         precise_sleep(max(sleep_time_s, 0.0))
@@ -396,8 +384,9 @@ def record(
     robot_action_processor: RobotProcessorPipeline | None = None,
     robot_observation_processor: RobotProcessorPipeline | None = None,
 ) -> LeRobotDataset:
-    init_logging()
-    logging.info(pformat(asdict(cfg)))
+    init_logging(console_level=os.getenv("LEROBOT_LOG_LEVEL", "INFO"))
+    if logging.getLogger().isEnabledFor(logging.INFO):
+        logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
         init_rerun(session_name="recording", ip=cfg.display_ip, port=cfg.display_port)
     display_compressed_images = (
@@ -408,12 +397,6 @@ def record(
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
-    effort_sensor = None
-    effort_names = _get_effort_names(cfg.dataset.effort_dim, cfg.dataset.effort_names)
-    if cfg.dataset.record_effort:
-        from lerobot.sensors import make_effort_sensor
-
-        effort_sensor = make_effort_sensor(cfg.dataset.effort_dim, effort_names)
 
     # Fall back to identity pipelines when the caller doesn't supply processors.
     if (
@@ -440,9 +423,6 @@ def record(
             use_videos=cfg.dataset.video,
         ),
     )
-    if cfg.dataset.record_effort:
-        _add_effort_dataset_feature(dataset_features, cfg.dataset.effort_dim, effort_names)
-
     dataset = None
     listener = None
 
@@ -507,6 +487,7 @@ def record(
                     robot=robot,
                     events=events,
                     fps=cfg.dataset.fps,
+                    control_fps=cfg.control_fps,
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
@@ -516,8 +497,6 @@ def record(
                     single_task=cfg.dataset.single_task,
                     display_data=cfg.display_data,
                     display_compressed_images=display_compressed_images,
-                    effort_sensor=effort_sensor,
-                    effort_names=effort_names if cfg.dataset.record_effort else None,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment
@@ -531,6 +510,7 @@ def record(
                         robot=robot,
                         events=events,
                         fps=cfg.dataset.fps,
+                        control_fps=cfg.control_fps,
                         teleop_action_processor=teleop_action_processor,
                         robot_action_processor=robot_action_processor,
                         robot_observation_processor=robot_observation_processor,
@@ -555,8 +535,6 @@ def record(
         if dataset:
             dataset.finalize()
 
-        if effort_sensor is not None:
-            effort_sensor.close()
         if robot.is_connected:
             robot.disconnect()
         if teleop and teleop.is_connected:

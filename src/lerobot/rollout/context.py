@@ -326,7 +326,9 @@ def build_rollout_context(
             k for k, v in policy_config.input_features.items() if v.type == FeatureType.VISUAL
         }
         provided_visuals = {
-            f"observation.images.{k}" for k, v in robot.observation_features.items() if isinstance(v, tuple)
+            f"observation.images.{k}"
+            for k, v in robot.observation_features.items()
+            if isinstance(v, tuple) and not str(k).startswith(("dmtac_", "tactile_"))
         }
         policy_subset = expected_visuals.issubset(provided_visuals)
         hw_subset = provided_visuals.issubset(expected_visuals)

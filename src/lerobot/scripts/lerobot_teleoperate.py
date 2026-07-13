@@ -55,7 +55,9 @@ lerobot-teleoperate \
 
 import logging
 import time
+import csv
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from pprint import pformat
 
 from lerobot.cameras.hikrobot import HikrobotCameraConfig  # noqa: F401
@@ -116,7 +118,7 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data, shutdo
 
 
 def _get_effort_names(effort_dim: int, effort_names: list[str] | None) -> list[str]:
-    # 他山传感器会在 EffortSensor 内部把每个触点的 nf/tf/tfDir 转成 fx/fy/fz。
+    # 接触力传感器按每个触点 fx/fy/fz 组织时，自动生成对应通道名。
     if effort_names is None and effort_dim % 3 == 0:
         names = []
         for point_idx in range(effort_dim // 3):
@@ -146,6 +148,7 @@ class TeleoperateConfig:
     # Limit the maximum frames per second.
     fps: int = 60
     teleop_time_s: float | None = None
+    pose_log_path: Path | None = Path("testlog")
     # Display all cameras on screen
     display_data: bool = False
     # Display data on a remote Rerun server
@@ -156,7 +159,7 @@ class TeleoperateConfig:
     display_compressed_images: bool = False
     # Read tactile/contact force during teleoperation and display it in Rerun.
     display_effort: bool = False
-    # 单帧力信息维度。默认一片他山传感器，两个触点，每个触点 fx/fy/fz，所以默认 6 维。
+    # 单帧力信息维度。默认两个触点，每个触点 fx/fy/fz，所以默认 6 维。
     effort_dim: int = 6
     # 每个力通道的名字；维度能被 3 整除时默认 fx_0/fy_0/fz_0...，否则默认 effort_0...。
     effort_names: list[str] | None = None
@@ -174,6 +177,7 @@ def teleop_loop(
     display_compressed_images: bool = False,
     effort_sensor=None,
     effort_names: list[str] | None = None,
+    pose_log_path: Path | None = None,
 ):
     """
     This function continuously reads actions from a teleoperation device, processes them through optional
@@ -193,60 +197,116 @@ def teleop_loop(
     """
 
     display_len = max(len(key) for key in robot.action_features)
+    pose_log_file = None
+    pose_log_writer = None
+    pose_log_fields = [
+        "time_s",
+        "loop_hz",
+        "clutch",
+        "gripper",
+        "dm_pose_id",
+        "dm_age_s",
+        "dm_x_m",
+        "dm_y_m",
+        "dm_z_m",
+        "dm_qx",
+        "dm_qy",
+        "dm_qz",
+        "dm_qw",
+        "tj_x_mm",
+        "tj_y_mm",
+        "tj_z_mm",
+        "tj_qx",
+        "tj_qy",
+        "tj_qz",
+        "tj_qw",
+        "dm_aligned_x_mm",
+        "dm_aligned_y_mm",
+        "dm_aligned_z_mm",
+        "dm_aligned_qx",
+        "dm_aligned_qy",
+        "dm_aligned_qz",
+        "dm_aligned_qw",
+        "target_x_mm",
+        "target_y_mm",
+        "target_z_mm",
+        "target_qx",
+        "target_qy",
+        "target_qz",
+        "target_qw",
+        *[f"action_{key}" for key in robot.action_features],
+    ]
+    if pose_log_path is not None and hasattr(teleop, "get_pose_log_snapshot"):
+        pose_log_path.parent.mkdir(parents=True, exist_ok=True)
+        pose_log_file = pose_log_path.open("w", newline="")
+        pose_log_writer = csv.DictWriter(pose_log_file, fieldnames=pose_log_fields)
+        pose_log_writer.writeheader()
+        logging.info("Writing teleop pose log to %s", pose_log_path.resolve())
     start = time.perf_counter()
-    while True:
-        loop_start = time.perf_counter()
+    try:
+        while True:
+            loop_start = time.perf_counter()
 
         # Get robot observation
         # Not really needed for now other than for visualization
         # teleop_action_processor can take None as an observation
         # given that it is the identity processor as default
-        obs = robot.get_observation()
-        if effort_sensor is not None:
-            if effort_names is None:
-                raise ValueError("effort_names must be provided when effort_sensor is enabled")
-            _read_effort_into_observation(obs, effort_sensor, effort_names)
+            obs = robot.get_observation()
+            if effort_sensor is not None:
+                if effort_names is None:
+                    raise ValueError("effort_names must be provided when effort_sensor is enabled")
+                _read_effort_into_observation(obs, effort_sensor, effort_names)
 
-        if robot.name in {"unitree_g1", "tj"}:
-            teleop.send_feedback(obs)
+            if robot.name in {"unitree_g1", "tj"}:
+                teleop.send_feedback(obs)
 
-        # Get teleop action
-        raw_action = teleop.get_action()
+            # Get teleop action
+            raw_action = teleop.get_action()
 
-        # Process teleop action through pipeline
-        teleop_action = teleop_action_processor((raw_action, obs))
+            # Process teleop action through pipeline
+            teleop_action = teleop_action_processor((raw_action, obs))
 
-        # Process action for robot through pipeline
-        robot_action_to_send = robot_action_processor((teleop_action, obs))
+            # Process action for robot through pipeline
+            robot_action_to_send = robot_action_processor((teleop_action, obs))
 
-        # Send processed action to robot (robot_action_processor.to_output should return RobotAction)
-        _ = robot.send_action(robot_action_to_send)
+            # Send processed action to robot (robot_action_processor.to_output should return RobotAction)
+            _ = robot.send_action(robot_action_to_send)
 
-        if display_data:
-            # Process robot observation through pipeline
-            obs_transition = robot_observation_processor(obs)
+            if display_data:
+                # Process robot observation through pipeline
+                obs_transition = robot_observation_processor(obs)
 
-            log_rerun_data(
-                observation=obs_transition,
-                action=teleop_action,
-                compress_images=display_compressed_images,
-            )
+                log_rerun_data(
+                    observation=obs_transition,
+                    action=teleop_action,
+                    compress_images=display_compressed_images,
+                )
 
-            print("\n" + "-" * (display_len + 10))
-            print(f"{'NAME':<{display_len}} | {'NORM':>7}")
-            # Display the final robot action that was sent
-            for motor, value in robot_action_to_send.items():
-                print(f"{motor:<{display_len}} | {value:>7.2f}")
-            move_cursor_up(len(robot_action_to_send) + 3)
+                print("\n" + "-" * (display_len + 10))
+                print(f"{'NAME':<{display_len}} | {'NORM':>7}")
+                # Display the final robot action that was sent
+                for motor, value in robot_action_to_send.items():
+                    print(f"{motor:<{display_len}} | {value:>7.2f}")
+                move_cursor_up(len(robot_action_to_send) + 3)
 
-        dt_s = time.perf_counter() - loop_start
-        precise_sleep(max(1 / fps - dt_s, 0.0))
-        loop_s = time.perf_counter() - loop_start
-        print(f"Teleop loop time: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
-        move_cursor_up(1)
+            dt_s = time.perf_counter() - loop_start
+            precise_sleep(max(1 / fps - dt_s, 0.0))
+            loop_s = time.perf_counter() - loop_start
+            loop_hz = 1 / loop_s
+            if pose_log_writer is not None:
+                snapshot = teleop.get_pose_log_snapshot()
+                row = {"time_s": time.perf_counter() - start, "loop_hz": loop_hz, **snapshot}
+                row.update({f"action_{key}": value for key, value in robot_action_to_send.items()})
+                pose_log_writer.writerow(row)
+                pose_log_file.flush()
+            print(f"Teleop loop time: {loop_s * 1e3:.2f}ms ({loop_hz:.0f} Hz)")
+            move_cursor_up(1)
 
-        if duration is not None and time.perf_counter() - start >= duration:
-            return
+            if duration is not None and time.perf_counter() - start >= duration:
+                return
+    finally:
+        if pose_log_file is not None:
+            pose_log_file.close()
 
 
 @parser.wrap()
@@ -286,6 +346,7 @@ def teleoperate(cfg: TeleoperateConfig):
             display_compressed_images=display_compressed_images,
             effort_sensor=effort_sensor,
             effort_names=effort_names if cfg.display_effort else None,
+            pose_log_path=cfg.pose_log_path,
         )
     except KeyboardInterrupt:
         pass

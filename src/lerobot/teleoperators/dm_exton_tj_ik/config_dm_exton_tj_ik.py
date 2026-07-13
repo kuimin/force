@@ -23,7 +23,7 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     pose_array_start_index: int = 7
     sdk_python_dir: Path | None = None
     kine_config_path: Path | None = None
-    use_clutch: bool = True
+    use_clutch: bool = False
     clutch_topic: str | None = None
     publish_state: bool = True
     state_topic: str | None = None
@@ -95,10 +95,14 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     first_pose_timeout_s: float = 10.0
     incoming_command_timeout_s: float = 0.25
     soft_start_duration_s: float = 0.5
+    clutch_anchor_delay_s: float = 0.15
     filter_frequency_hz: float = 1000.0
     filter_mincutoff: float = 2.5
     filter_beta: float = 0.2
     filter_dcutoff: float = 1.0
+    gripper_filter_mincutoff: float = 0.2
+    gripper_filter_beta: float = 0.01
+    gripper_filter_dcutoff: float = 1.0
 
     def __post_init__(self):
         if self.arm not in {"A", "B"}:
@@ -184,9 +188,15 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             raise ValueError("incoming_command_timeout_s must be positive")
         if self.soft_start_duration_s < 0:
             raise ValueError("soft_start_duration_s must be non-negative")
+        if self.clutch_anchor_delay_s < 0:
+            raise ValueError("clutch_anchor_delay_s must be non-negative")
         if self.filter_frequency_hz <= 0:
             raise ValueError("filter_frequency_hz must be positive")
         if self.filter_mincutoff <= 0:
             raise ValueError("filter_mincutoff must be positive")
         if self.filter_dcutoff <= 0:
             raise ValueError("filter_dcutoff must be positive")
+        if self.gripper_filter_mincutoff <= 0:
+            raise ValueError("gripper_filter_mincutoff must be positive")
+        if self.gripper_filter_dcutoff <= 0:
+            raise ValueError("gripper_filter_dcutoff must be positive")

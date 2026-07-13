@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 
 import importlib.util
+import contextlib
 import logging
+import os
 import time
 from functools import cached_property
 from pathlib import Path
@@ -15,9 +17,20 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 
 from ..robot import Robot
 from .config_tj import TJRobotConfig
+from .dmtac_image_sensors import DmTacImageSensors
 from .robotiq_usb_gripper import RobotiqUsbGripper
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _suppress_output(enabled: bool):
+    if not enabled:
+        yield
+        return
+    with open(os.devnull, "w") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
 
 
 def _default_sdk_python_dir() -> Path:
@@ -48,10 +61,10 @@ class TJRobot(Robot):
         self.robot = None
         self.dcss = None
         self.gripper = None
+        self.dmtac = self._make_dmtac_image_sensors()
         self._last_commanded_joints = None
         self._last_gripper_value = None
         self._last_gripper_state = None
-        self._warned_gripper_unconfigured = False
         self._last_send_log_s = 0.0
 
     @property
@@ -73,9 +86,13 @@ class TJRobot(Robot):
             for cam in self.cameras
         }
 
+    @property
+    def _dmtac_ft(self) -> dict[str, tuple]:
+        return self.dmtac.features if self.dmtac is not None else {}
+
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        return {**self._joint_pos_ft, **self._joint_vel_ft, **self._cameras_ft}
+        return {**self._joint_pos_ft, **self._joint_vel_ft, **self._cameras_ft, **self._dmtac_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -86,7 +103,35 @@ class TJRobot(Robot):
 
     @property
     def is_connected(self) -> bool:
-        return self.robot is not None and all(cam.is_connected for cam in self.cameras.values())
+        dmtac_connected = self.dmtac is None or self.dmtac.is_connected
+        return self.robot is not None and all(cam.is_connected for cam in self.cameras.values()) and dmtac_connected
+
+    def _make_dmtac_image_sensors(self) -> DmTacImageSensors | None:
+        if not (self.config.enable_dmtac_images or self.config.enable_dmtac_force):
+            return None
+        return DmTacImageSensors(
+            dev_ids=self.config.dmtac_dev_ids,
+            sdk_dir=self.config.dmtac_sdk_dir,
+            backend=self.config.dmtac_backend,
+            mode=self.config.dmtac_mode,
+            max_fps=self.config.dmtac_max_fps,
+            show_fps=self.config.dmtac_show_fps,
+            enable_images=self.config.enable_dmtac_images,
+            enable_force=self.config.enable_dmtac_force,
+            image_shape=(
+                self.config.dmtac_image_height,
+                self.config.dmtac_image_width,
+                self.config.dmtac_image_channels,
+            ),
+            force_dim=self.config.dmtac_force_dim,
+            auto_count=self.config.dmtac_auto_count,
+            cpu_fallback=self.config.dmtac_cpu_fallback,
+            silent_sdk=self.config.silent_sdk,
+            wait_timeout_ms=self.config.dmtac_wait_timeout_ms,
+            remote_addr=self.config.dmtac_remote_addr,
+            pc_host=self.config.dmtac_pc_host,
+            pc_port=self.config.dmtac_pc_port,
+        )
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
@@ -95,7 +140,9 @@ class TJRobot(Robot):
         self.robot = self.sdk.Marvin_Robot()
         self.dcss = self.sdk.DCSS()
 
-        if not self.robot.connect(self.config.ip):
+        with _suppress_output(self.config.silent_sdk):
+            connected = self.robot.connect(self.config.ip)
+        if not connected:
             self.robot = None
             self.dcss = None
             raise ConnectionError(f"Failed to connect TJ robot at {self.config.ip}")
@@ -106,7 +153,11 @@ class TJRobot(Robot):
             self._check_frame_updates()
             self.configure()
             self._connect_gripper()
+            if self.dmtac is not None:
+                self.dmtac.connect()
         except Exception:
+            if self.dmtac is not None:
+                self.dmtac.disconnect()
             if self.gripper is not None:
                 self.gripper.disconnect()
                 self.gripper = None
@@ -121,7 +172,7 @@ class TJRobot(Robot):
         logger.info("%s connected to TJ robot arm %s at %s", self, self.config.arm, self.config.ip)
 
     def _connect_gripper(self) -> None:
-        if not self.config.enable_gripper_action or self.config.gripper_backend != "robotiq_usb":
+        if not self.config.enable_gripper_action:
             return
         self.gripper = RobotiqUsbGripper(
             port=self.config.robotiq_usb_port,
@@ -158,16 +209,18 @@ class TJRobot(Robot):
     def configure(self) -> None:
         if self.robot is None:
             return
-        self.robot.log_switch("1" if self.config.log_switch else "0")
-        self.robot.local_log_switch("1" if self.config.local_log_switch else "0")
-        self.robot.clear_set()
-        self.robot.set_state(arm=self.config.arm, state=1)
-        self.robot.set_vel_acc(
-            arm=self.config.arm,
-            velRatio=self.config.velocity_percent,
-            AccRatio=self.config.acceleration_percent,
-        )
-        if not self.robot.send_cmd():
+        with _suppress_output(self.config.silent_sdk):
+            self.robot.log_switch("1" if self.config.log_switch else "0")
+            self.robot.local_log_switch("1" if self.config.local_log_switch else "0")
+            self.robot.clear_set()
+            self.robot.set_state(arm=self.config.arm, state=1)
+            self.robot.set_vel_acc(
+                arm=self.config.arm,
+                velRatio=self.config.velocity_percent,
+                AccRatio=self.config.acceleration_percent,
+            )
+            ok = self.robot.send_cmd()
+        if not ok:
             raise RuntimeError(f"Failed to configure TJ arm {self.config.arm} in position mode")
         time.sleep(0.1)
 
@@ -214,6 +267,8 @@ class TJRobot(Robot):
             obs[f"{joint}.vel"] = float(value)
         for cam_key, cam in self.cameras.items():
             obs[cam_key] = cam.read_latest()
+        if self.dmtac is not None:
+            obs.update(self.dmtac.read())
         return obs
 
     @check_if_not_connected
@@ -227,12 +282,13 @@ class TJRobot(Robot):
         if self.config.enable_gripper_action and gripper_key in action:
             gripper_value = float(np.clip(float(action[gripper_key]), 0.0, 1.0))
 
-        self.robot.clear_set()
-        ok_set = self.robot.set_joint_cmd_pose(arm=self.config.arm, joints=target.tolist())
-        if self.config.wait_response_on_action:
-            send_response = self.robot.send_cmd_wait_response(self.config.action_response_timeout_ms)
-        else:
-            send_response = self.robot.send_cmd()
+        with _suppress_output(self.config.silent_sdk):
+            self.robot.clear_set()
+            ok_set = self.robot.set_joint_cmd_pose(arm=self.config.arm, joints=target.tolist())
+            if self.config.wait_response_on_action:
+                send_response = self.robot.send_cmd_wait_response(self.config.action_response_timeout_ms)
+            else:
+                send_response = self.robot.send_cmd()
         if not ok_set or send_response <= 0:
             raise RuntimeError(
                 f"Failed to send TJ joint command to arm {self.config.arm}: "
@@ -243,7 +299,7 @@ class TJRobot(Robot):
             self._send_gripper_action(gripper_value)
         now = time.monotonic()
         if now - self._last_send_log_s >= 0.5:
-            logger.info("TJ sent q(deg)=%s", [round(float(value), 3) for value in target])
+            logger.debug("TJ sent q(deg)=%s", [round(float(value), 3) for value in target])
             self._last_send_log_s = now
         sent = {f"{joint}.pos": float(value) for joint, value in zip(self.config.joint_names, target, strict=True)}
         if gripper_value is not None:
@@ -259,62 +315,29 @@ class TJRobot(Robot):
         ):
             return
 
-        if self.config.gripper_backend == "robotiq_usb":
-            if self.gripper is None:
-                raise RuntimeError("TJ Robotiq USB gripper backend is enabled but the gripper is not connected")
-            position = self.gripper.move_norm(value)
-            logger.info(
-                "TJ sent Robotiq USB gripper command (%s.pos=%.3f -> %s/255)",
-                self.config.gripper_name,
-                value,
-                position,
-            )
-            self._last_gripper_value = value
-            self._last_gripper_state = str(position)
-            return
-
-        close = value >= self.config.gripper_close_threshold
-        state = "close" if close else "open"
-        if state == self._last_gripper_state:
-            self._last_gripper_value = value
-            return
-
-        hex_command = self.config.gripper_close_hex if close else self.config.gripper_open_hex
-        channel = self.config.gripper_command_channel
-        if channel is None or not hex_command:
-            if not self._warned_gripper_unconfigured:
-                logger.warning(
-                    "Received %s.pos but no TJ gripper protocol is configured; "
-                    "set gripper_command_channel plus gripper_open_hex/gripper_close_hex to move hardware",
-                    self.config.gripper_name,
-                )
-                self._warned_gripper_unconfigured = True
-            self._last_gripper_value = value
-            self._last_gripper_state = state
-            return
-
-        payload = bytes.fromhex(hex_command.replace(" ", ""))
-        if hasattr(self.robot, "set_ch_data"):
-            response = self.robot.set_ch_data(self.config.arm, payload, len(payload), channel)
-        else:
-            response = self.robot.set_485_data(self.config.arm, payload, len(payload), channel)
-        if response <= 0:
-            raise RuntimeError(
-                f"Failed to send TJ gripper {state} command on channel {channel}: response={response}"
-            )
-        logger.info("TJ sent gripper %s command (%s.pos=%.3f)", state, self.config.gripper_name, value)
+        if self.gripper is None:
+            raise RuntimeError("TJ Robotiq USB gripper is enabled but the gripper is not connected")
+        position = self.gripper.move_norm(value)
+        logger.info(
+            "TJ sent Robotiq USB gripper command (%s.pos=%.3f -> %s/255)",
+            self.config.gripper_name,
+            value,
+            position,
+        )
         self._last_gripper_value = value
-        self._last_gripper_state = state
+        self._last_gripper_state = str(position)
 
     @check_if_not_connected
     def disconnect(self) -> None:
         if self.robot is not None:
             try:
                 if self.config.disable_on_disconnect:
-                    self.robot.clear_set()
-                    self.robot.set_state(arm=self.config.arm, state=0)
-                    self.robot.send_cmd()
-                self.robot.release_robot()
+                    with _suppress_output(self.config.silent_sdk):
+                        self.robot.clear_set()
+                        self.robot.set_state(arm=self.config.arm, state=0)
+                        self.robot.send_cmd()
+                with _suppress_output(self.config.silent_sdk):
+                    self.robot.release_robot()
             finally:
                 if self.gripper is not None:
                     self.gripper.disconnect()
@@ -325,8 +348,9 @@ class TJRobot(Robot):
                 self._last_commanded_joints = None
                 self._last_gripper_value = None
                 self._last_gripper_state = None
-                self._warned_gripper_unconfigured = False
                 self._last_send_log_s = 0.0
+        if self.dmtac is not None:
+            self.dmtac.disconnect()
         for cam in self.cameras.values():
             cam.disconnect()
         logger.info("%s disconnected.", self)

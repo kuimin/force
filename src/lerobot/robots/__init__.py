@@ -15,7 +15,8 @@
 # limitations under the License.
 
 from .config import RobotConfig
+from .dmtac import DmTac, DmTacConfig
 from .robot import Robot
 from .utils import make_robot_from_config
 
-__all__ = ["Robot", "RobotConfig", "make_robot_from_config"]
+__all__ = ["DmTac", "DmTacConfig", "Robot", "RobotConfig", "make_robot_from_config"]

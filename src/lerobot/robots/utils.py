@@ -84,6 +84,10 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
         from .tj import TJRobot
 
         return TJRobot(config)
+    elif config.type == "dmtac":
+        from .dmtac import DmTac
+
+        return DmTac(config)
     elif config.type == "mock_robot":
         from tests.mocks.mock_robot import MockRobot
 
