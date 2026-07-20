@@ -22,38 +22,28 @@ python src/lerobot/scripts/lerobot_find_cameras.py opencv
 sudo chmod 666 /dev/video2 /dev/video4 #OpenCV 外接摄像头；/dev/video0 是电脑自带摄像头，不用
 
 python src/lerobot/scripts/lerobot_record.py \
-  --robot.type=ur5e \
-  --robot.ip=192.168.1.11 \
-  --robot.use_gripper=true \
-  --robot.cameras='{ arm: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, top: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
-  --teleop.type=gello \
-  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
-  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
-  --teleop.include_gripper=true \
-  --dataset.repo_id=kuimin/urforce_20260617_171904 \
-  --dataset.root=/home/robot/.cache/huggingface/lerobot/kuimin/urforce_20260617_171904 \
-  --dataset.single_task="The contact force is too large" \
-  --dataset.fps=30 \
+  --robot.type=tj \
+  --robot.robotiq_usb_port=/dev/ttyUSB0 \
+  --robot.silent_sdk=true \
+  --robot.log_switch=false \
+  --robot.cameras='{ top: {type: intelrealsense, serial_number_or_name: "261822304115", width: 640, height: 480, fps: 30}, wrist: {type: intelrealsense, serial_number_or_name: "260422275320", width: 640, height: 480, fps: 30} }' \
+  --robot.enable_dmtac_images=true \
+  --robot.dmtac_dev_ids='["M26190088","M26190187"]' \
+  --robot.dmtac_max_fps=30 \
+  --teleop.type=dm_exton_tj_ik \
+  --dataset.repo_id=kuimin/tj_dm_record_raw_001 \
+  --dataset.num_episodes=30 \
   --dataset.episode_time_s=60 \
-  --dataset.num_episodes=50 \
-  --dataset.record_effort=true \
+  --dataset.reset_time_s=60 \
+  --dataset.single_task="test" \
+  --dataset.fps=30 \
+  --dataset.streaming_encoding=true \
+  --dataset.encoder_threads=2 \
   --dataset.push_to_hub=false \
-  --resume=true \
   --display_data=true
 
 遥操作
-python src/lerobot/scripts/lerobot_teleoperate.py \
-  --robot.type=ur5e \
-  --robot.ip=192.168.1.11 \
-  --robot.use_gripper=true \
-  --robot.cameras='{ front: {type: opencv, index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, fourcc: "MJPG"}, side: {type: opencv, index_or_path: "/dev/video4", width: 640, height: 480, fps: 30, fourcc: "MJPG"} }' \
-  --fps=30 \
-  --teleop.type=gello \
-  --teleop.single_port=/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTC02I79-if00-port0 \
-  --teleop.gello_software_path=/home/robot/lerobot/third_party/gello_software \
-  --teleop.include_gripper=true \
-  --display_effort=true \
-  --display_data=true
+python src/lerobot/scripts/lerobot_teleoperate.py   --teleop.type=dm_exton_tj_ik   --teleop.arm=B   --teleop.pose_topic=/target_robot/right_ee/target   --teleop.mapping_mode=relative   --robot.type=tj   --robot.arm=B   --robot.ip=192.168.1.190   --robot.robotiq_usb_port=/dev/ttyUSB0
 
 训练
 python -m lerobot.scripts.lerobot_train \

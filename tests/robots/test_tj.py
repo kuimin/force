@@ -40,9 +40,6 @@ class FakeMarvinRobot:
     def log_switch(self, _flag):
         return 1
 
-    def local_log_switch(self, _flag):
-        return 1
-
     def clear_set(self):
         return 1
 
@@ -114,7 +111,7 @@ def test_tj_send_action_to_selected_arm(fake_sdk):
     assert robot.robot.send_cmd_wait_response_count == 0
 
 
-def test_tj_dmtac_image_features_are_two_images_per_sensor():
+def test_tj_dmtac_image_features_are_one_raw_image_per_sensor():
     robot = TJRobot(
         TJRobotConfig(
             ip="127.0.0.1",
@@ -123,10 +120,9 @@ def test_tj_dmtac_image_features_are_two_images_per_sensor():
         )
     )
 
-    assert robot.observation_features["dmtac_0_infer"] == (240, 320, 3)
-    assert robot.observation_features["dmtac_0_raw"] == (240, 320, 3)
-    assert robot.observation_features["dmtac_1_infer"] == (240, 320, 3)
-    assert robot.observation_features["dmtac_1_raw"] == (240, 320, 3)
+    assert robot.observation_features["dmtac_0_raw"] == (480, 640, 3)
+    assert robot.observation_features["dmtac_1_raw"] == (480, 640, 3)
+    assert len(robot.observation_features) == 16
 
 
 def test_tj_get_observation_includes_dmtac_images():
@@ -137,15 +133,13 @@ def test_tj_get_observation_includes_dmtac_images():
     robot.dmtac = SimpleNamespace(
         is_connected=True,
         read=lambda: {
-            "dmtac_0_infer": image,
-            "dmtac_0_raw": image + 1,
+            "dmtac_0_raw": image,
         },
     )
 
     obs = robot.get_observation()
 
-    assert np.array_equal(obs["dmtac_0_infer"], image)
-    assert np.array_equal(obs["dmtac_0_raw"], image + 1)
+    assert np.array_equal(obs["dmtac_0_raw"], image)
 
 
 def test_tj_robotiq_usb_gripper_maps_norm_to_raw_position():

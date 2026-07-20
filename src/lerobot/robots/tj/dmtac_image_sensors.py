@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
-import logging
 import contextlib
+import logging
 import os
 import sys
 from pathlib import Path
@@ -67,7 +67,6 @@ class DmTacImageSensors:
         self._active_backends: list[str] = []
         self._feature_sensor_count = self._initial_sensor_count()
         self._last_frame_ids = [-1] * self._feature_sensor_count
-        self._put_arrows_on_image = None
 
     def _initial_sensor_count(self) -> int:
         return self.auto_count if self._uses_auto_discovery(self.dev_ids) else len(self.dev_ids)
@@ -81,8 +80,7 @@ class DmTacImageSensors:
         features = {}
         for index in range(self._feature_sensor_count):
             if self.enable_images:
-                features[f"dmtac_{index}_ui_infer"] = self.image_shape
-                features[f"dmtac_{index}_ui_deformation"] = self.image_shape
+                features[f"dmtac_{index}_raw"] = self.image_shape
             if self.enable_force:
                 for force_index, channel in enumerate(self._force_channel_names()):
                     features[f"dmtac_{index}_force.{channel}"] = float
@@ -101,10 +99,8 @@ class DmTacImageSensors:
                 sys.path.insert(0, sdk_path)
 
         from dmrobotics import Mode, Sensor, SensorOptions, listConnectedDevIDs
-        from dmrobotics.utils import put_arrows_on_image
 
         self.dev_ids = self._resolve_dev_ids(listConnectedDevIDs)
-        self._put_arrows_on_image = put_arrows_on_image
         sensor_mode = Mode.HIGH if self.mode.lower() == "high" else Mode.STANDARD
         self._sensors = []
         self._active_backends = []
@@ -162,8 +158,8 @@ class DmTacImageSensors:
             mode=sensor_mode,
             show_fps=self.show_fps,
             max_fps=self.max_fps,
-            enable_raw=False,
-            enable_deformation=self.enable_force or self.enable_images,
+            enable_raw=self.enable_images,
+            enable_deformation=self.enable_force,
             enable_depth=False,
             enable_shear=False,
             enable_force=self.enable_force,
@@ -180,8 +176,7 @@ class DmTacImageSensors:
                 sensor.getEvents()
             if int(sensor.getDevStatus()) != 0:
                 if self.enable_images:
-                    obs[f"dmtac_{index}_ui_infer"] = self._blank_image()
-                    obs[f"dmtac_{index}_ui_deformation"] = self._blank_image()
+                    obs[f"dmtac_{index}_raw"] = self._blank_image()
                 if self.enable_force:
                     self._write_force(obs, index, self._blank_force())
                 continue
@@ -189,11 +184,9 @@ class DmTacImageSensors:
             sensor.wait_for_new(self._last_frame_ids[index], timeout_ms=self.wait_timeout_ms)
             frame_ids = []
             if self.enable_images:
-                infer_frame_id, infer = sensor.getInferImg()
-                deformation_frame_id, deformation = sensor.getDeformation2D()
-                obs[f"dmtac_{index}_ui_infer"] = self._image_to_array(infer)
-                obs[f"dmtac_{index}_ui_deformation"] = self._deformation_to_ui_image(deformation)
-                frame_ids.extend([int(infer_frame_id), int(deformation_frame_id)])
+                raw_frame_id, raw = sensor.getRawImg()
+                obs[f"dmtac_{index}_raw"] = self._image_to_array(raw)
+                frame_ids.append(int(raw_frame_id))
             if self.enable_force:
                 force_frame_id, force = self._split_frame_result(sensor.getForce())
                 self._write_force(obs, index, self._force_to_array(force))
@@ -232,15 +225,6 @@ class DmTacImageSensors:
             return self._blank_image()
         arr = np.asarray(img)
         return self._array_to_image_shape(arr)
-
-    def _deformation_to_ui_image(self, deformation: Any) -> np.ndarray:
-        if deformation is None or self._put_arrows_on_image is None:
-            return self._blank_image()
-        deformation_arr = np.asarray(deformation)
-        if deformation_arr.ndim < 2:
-            return self._blank_image()
-        canvas = np.zeros(deformation_arr.shape[:2] + (3,), dtype=np.uint8)
-        return self._array_to_image_shape(self._put_arrows_on_image(canvas, deformation_arr, step=16, scale=20.0))
 
     def _array_to_image_shape(self, arr: np.ndarray) -> np.ndarray:
         if arr.ndim == 2 and self.image_shape[2] == 3:

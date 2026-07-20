@@ -89,19 +89,23 @@ def test_relative_mapping_keeps_first_tj_reference_pose():
     assert np.allclose(target, tj_ref)
 
 
-def test_relative_mapping_uses_position_and_relative_orientation():
+def test_relative_mapping_left_multiplies_base_frame_orientation_delta():
     dm_ref = np.eye(4)
     dm_now = np.eye(4)
-    dm_now[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    master_delta_in_base = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    dm_now[:3, :3] = master_delta_in_base @ dm_ref[:3, :3]
     dm_now[:3, 3] = [15.0, 18.0, 33.0]
     tj_ref = np.eye(4)
-    tj_ref[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    tj_ref[:3, :3] = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
     tj_ref[:3, 3] = [100.0, 200.0, 300.0]
 
     target = _map_dm_pose_to_tj_pose(dm_now, dm_ref, tj_ref, "relative")
 
     assert np.allclose(target[:3, 3], [115.0, 218.0, 333.0])
-    assert np.allclose(target[:3, :3], tj_ref[:3, :3] @ dm_now[:3, :3])
+    expected = master_delta_in_base @ tj_ref[:3, :3]
+    wrong_local_result = tj_ref[:3, :3] @ master_delta_in_base
+    assert np.allclose(target[:3, :3], expected)
+    assert not np.allclose(target[:3, :3], wrong_local_result)
 
 
 def test_position_relative_mapping_uses_dm_position_delta_only():
@@ -119,7 +123,7 @@ def test_position_relative_mapping_uses_dm_position_delta_only():
     assert np.allclose(target[:3, 3], [105.0, 198.0, 303.0])
 
 
-def test_pose_increment_mapping_uses_position_and_relative_orientation():
+def test_pose_increment_mapping_left_multiplies_base_frame_orientation_delta():
     dm_step = np.eye(4)
     dm_step[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
     dm_step[:3, 3] = [5.0, -2.0, 3.0]
@@ -129,7 +133,10 @@ def test_pose_increment_mapping_uses_position_and_relative_orientation():
 
     target = _map_dm_pose_to_tj_pose(dm_step, np.eye(4), tj_ref, "pose_increment")
 
-    assert np.allclose(target[:3, :3], tj_ref[:3, :3] @ dm_step[:3, :3])
+    expected = dm_step[:3, :3] @ tj_ref[:3, :3]
+    wrong_local_result = tj_ref[:3, :3] @ dm_step[:3, :3]
+    assert np.allclose(target[:3, :3], expected)
+    assert not np.allclose(target[:3, :3], wrong_local_result)
     assert np.allclose(target[:3, 3], [105.0, 198.0, 303.0])
 
 
@@ -154,13 +161,13 @@ def test_default_master_axis_map_matches_dm_to_tj_position_axes():
     assert np.allclose(rotation @ [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
 
 
-def test_default_master_orientation_axis_map_matches_dm_to_tj_orientation_axes():
+def test_default_master_orientation_axis_map_rotates_orientation_axes_about_x():
     config = DMExtonTJIKTeleopConfig()
     rotation = np.asarray(config.master_orientation_axis_map, dtype=np.float64)
 
-    assert np.allclose(rotation @ [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
-    assert np.allclose(rotation @ [0.0, 1.0, 0.0], [0.0, 1.0, 0.0])
-    assert np.allclose(rotation @ [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])
+    assert np.allclose(rotation @ [1.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+    assert np.allclose(rotation @ [0.0, 1.0, 0.0], [0.0, 0.0, -1.0])
+    assert np.allclose(rotation @ [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
 
 
 def test_master_axis_alignment_can_transform_position_and_orientation_separately():

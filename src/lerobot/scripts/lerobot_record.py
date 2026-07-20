@@ -168,22 +168,10 @@ from lerobot.utils.utils import (
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 
-def _record_display_observation(obs: RobotObservation, robot: Robot) -> RobotObservation:
-    camera_names = set(getattr(robot, "cameras", {}).keys())
-    display_camera_names = camera_names & {"front", "fornt", "top"}
-    display_obs: RobotObservation = {}
-    for key, value in obs.items():
-        if str(key) in display_camera_names:
-            display_obs[key] = value
-    return display_obs
-
-
 @dataclass
 class RecordConfig:
     robot: RobotConfig
     dataset: DatasetRecordConfig
-    # Robot control loop frequency. Dataset saving still uses dataset.fps.
-    control_fps: int | None = 60
     # Teleoperator to control the robot (required)
     teleop: TeleoperatorConfig | None = None
     # Display all cameras on screen
@@ -200,8 +188,6 @@ class RecordConfig:
     resume: bool = False
 
     def __post_init__(self):
-        if self.control_fps is not None and self.control_fps <= 0:
-            raise ValueError("control_fps must be positive when set")
         if self.teleop is None:
             raise ValueError(
                 "A teleoperator is required for recording. "
@@ -241,7 +227,6 @@ def record_loop(
     robot: Robot,
     events: dict,
     fps: int,
-    control_fps: int | None,
     teleop_action_processor: RobotProcessorPipeline[
         tuple[RobotAction, RobotObservation], RobotAction
     ],  # runs after teleop
@@ -286,18 +271,13 @@ def record_loop(
                 "For multi-teleop, the list must contain exactly one KeyboardTeleop and one arm teleoperator. Currently only supported for LeKiwi robot."
             )
 
-    control_fps = control_fps or fps
-    control_interval = 1 / control_fps
-    dataset_interval = 1 / fps
-    next_dataset_frame_t = 0.0
+    control_interval = 1 / fps
 
     no_action_count = 0
     timestamp = 0
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
-        timestamp = start_loop_t - start_episode_t
-        should_write_dataset_frame = dataset is not None and timestamp + 1e-9 >= next_dataset_frame_t
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -309,7 +289,7 @@ def record_loop(
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
 
-        if should_write_dataset_frame:
+        if dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         # Get action from teleop
@@ -348,18 +328,21 @@ def record_loop(
         _sent_action = robot.send_action(robot_action_to_send)
 
         # Write to dataset
-        if should_write_dataset_frame:
+        if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
             frame = {**observation_frame, **action_frame, "task": single_task}
             dataset.add_frame(frame)
-            next_dataset_frame_t += dataset_interval
-            while timestamp - next_dataset_frame_t >= dataset_interval:
-                next_dataset_frame_t += dataset_interval
 
         if display_data:
-            display_obs = _record_display_observation(obs_processed, robot)
+            # Rerun is only for the configured robot cameras. Keep tactile images
+            # and robot state in the dataset without creating extra display views.
+            display_observation = {
+                camera_name: obs_processed[camera_name]
+                for camera_name in robot.cameras
+                if camera_name in obs_processed
+            }
             log_rerun_data(
-                observation=display_obs,
+                observation=display_observation,
                 action=None,
                 compress_images=display_compressed_images,
             )
@@ -369,7 +352,7 @@ def record_loop(
         sleep_time_s: float = control_interval - dt_s
         if sleep_time_s < 0:
             logging.warning(
-                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target control FPS ({control_fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
+                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target FPS ({fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
             )
 
         precise_sleep(max(sleep_time_s, 0.0))
@@ -487,7 +470,6 @@ def record(
                     robot=robot,
                     events=events,
                     fps=cfg.dataset.fps,
-                    control_fps=cfg.control_fps,
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
@@ -510,7 +492,6 @@ def record(
                         robot=robot,
                         events=events,
                         fps=cfg.dataset.fps,
-                        control_fps=cfg.control_fps,
                         teleop_action_processor=teleop_action_processor,
                         robot_action_processor=robot_action_processor,
                         robot_observation_processor=robot_observation_processor,

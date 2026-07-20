@@ -4,6 +4,7 @@ import importlib.util
 import contextlib
 import logging
 import os
+import sys
 import time
 from functools import cached_property
 from pathlib import Path
@@ -28,9 +29,22 @@ def _suppress_output(enabled: bool):
     if not enabled:
         yield
         return
-    with open(os.devnull, "w") as devnull:
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    stdout_fd = os.dup(1)
+    stderr_fd = os.dup(2)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
             yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(stdout_fd, 1)
+        os.dup2(stderr_fd, 2)
+        os.close(stdout_fd)
+        os.close(stderr_fd)
 
 
 def _default_sdk_python_dir() -> Path:
@@ -149,7 +163,8 @@ class TJRobot(Robot):
 
         try:
             if self.config.check_error_on_connect:
-                self.robot.check_error_and_clear(self.dcss)
+                with _suppress_output(self.config.silent_sdk):
+                    self.robot.check_error_and_clear(self.dcss)
             self._check_frame_updates()
             self.configure()
             self._connect_gripper()
@@ -211,7 +226,9 @@ class TJRobot(Robot):
             return
         with _suppress_output(self.config.silent_sdk):
             self.robot.log_switch("1" if self.config.log_switch else "0")
-            self.robot.local_log_switch("1" if self.config.local_log_switch else "0")
+            local_log_switch = getattr(self.robot, "local_log_switch", None)
+            if callable(local_log_switch):
+                local_log_switch("1" if self.config.log_switch else "0")
             self.robot.clear_set()
             self.robot.set_state(arm=self.config.arm, state=1)
             self.robot.set_vel_acc(

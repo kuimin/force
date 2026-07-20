@@ -14,8 +14,8 @@ class RobotiqUsbGripper:
         self,
         port: str = "auto",
         device_id: int = 9,
-        speed: int = 255,
-        force: int = 255,
+        speed: int = 25,
+        force: int = 25,
         activate_on_connect: bool = True,
         open_on_connect: bool = False,
     ) -> None:
@@ -53,7 +53,7 @@ class RobotiqUsbGripper:
     def move_norm(self, value: float) -> int:
         if self._driver is None:
             raise RuntimeError("Robotiq USB gripper is not connected")
-        position = int(round(float(np.clip(value, 0.0, 1.0)) * 255.0))
+        position = int(round(float(np.clip(value, 0.0, 1.0)) * 70.0))
         if position == self._last_position:
             return position
         self._driver.move(position, speed=self.speed, force=self.force)

@@ -23,7 +23,7 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
     pose_array_start_index: int = 7
     sdk_python_dir: Path | None = None
     kine_config_path: Path | None = None
-    use_clutch: bool = False
+    use_clutch: bool = True
     clutch_topic: str | None = None
     publish_state: bool = True
     state_topic: str | None = None
@@ -77,11 +77,12 @@ class DMExtonTJIKTeleopConfig(TeleoperatorConfig):
             [0.0, -1.0, 0.0],
         ]
     )
+    # Change the incoming orientation axes by -90 degrees about X.
     master_orientation_axis_map: list[list[float]] | None = field(
         default_factory=lambda: [
-            [0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0],
             [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
         ]
     )
     mirror_x: bool = False

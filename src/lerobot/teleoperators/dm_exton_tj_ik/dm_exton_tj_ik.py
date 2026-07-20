@@ -301,7 +301,8 @@ def _map_dm_pose_to_tj_pose(
         return target
     if mapping_mode == "pose_increment":
         target = tj_reference_matrix.copy()
-        target[:3, :3] = tj_reference_matrix[:3, :3] @ dm_matrix[:3, :3]
+        # A base-frame rotation increment must left-multiply the reference orientation.
+        target[:3, :3] = dm_matrix[:3, :3] @ tj_reference_matrix[:3, :3]
         target[:3, 3] = tj_reference_matrix[:3, 3] + dm_matrix[:3, 3]
         return target
     if mapping_mode == "position_relative":
@@ -311,8 +312,10 @@ def _map_dm_pose_to_tj_pose(
     if mapping_mode == "relative":
         target = tj_reference_matrix.copy()
         target[:3, 3] = tj_reference_matrix[:3, 3] + (dm_matrix[:3, 3] - dm_reference_matrix[:3, 3])
-        dm_delta_in_base = dm_matrix[:3, :3] @ dm_reference_matrix[:3, :3].T
-        target[:3, :3] = tj_reference_matrix[:3, :3] @ dm_delta_in_base
+        master_delta_in_base = dm_matrix[:3, :3] @ dm_reference_matrix[:3, :3].T
+        robot_reference_rotation = tj_reference_matrix[:3, :3]
+        # A base-frame rotation increment must left-multiply the reference orientation.
+        target[:3, :3] = master_delta_in_base @ robot_reference_rotation
         return target
     raise ValueError(f"Unsupported mapping_mode: {mapping_mode}")
 
@@ -1130,13 +1133,14 @@ class DMExtonTJIKTeleop(Teleoperator):
                     self._dm_increment_accumulated_matrix[:3, 3]
                 )
                 self._dm_increment_accumulated_matrix[:3, :3] = (
-                    self._dm_increment_accumulated_matrix[:3, :3] @ step[:3, :3]
+                    step[:3, :3] @ self._dm_increment_accumulated_matrix[:3, :3]
                 )
                 if pose_id is not None:
                     self._last_increment_pose_id = pose_id
             target = self._tj_reference_matrix.copy()
             target[:3, 3] = self._tj_reference_matrix[:3, 3] + self._dm_increment_accumulated_matrix[:3, 3]
-            target[:3, :3] = self._tj_reference_matrix[:3, :3] @ self._dm_increment_accumulated_matrix[:3, :3]
+            # Accumulated increments are expressed in the robot base frame, so they left-multiply.
+            target[:3, :3] = self._dm_increment_accumulated_matrix[:3, :3] @ self._tj_reference_matrix[:3, :3]
             now = time.monotonic()
             if now - self._last_target_log_s >= 0.5:
                 logger.info(
@@ -1192,9 +1196,7 @@ class DMExtonTJIKTeleop(Teleoperator):
                 return self._halt_action_or_reference()
             raise RuntimeError(f"TJ IK failed for the latest DM-EXton2 pose: {self._last_ik_failure}")
         action = {f"{joint}.pos": value for joint, value in zip(self.config.joint_names, joints, strict=True)}
-        if self.config.enable_gripper:
-            with self._lock:
-                action[f"{self.config.gripper_name}.pos"] = float(self._latest_gripper)
+        self._add_gripper_action(action)
         self._last_action = action
         return action
 

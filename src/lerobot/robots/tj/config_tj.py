@@ -46,7 +46,6 @@ class TJRobotConfig(RobotConfig):
     robotiq_usb_open_on_connect: bool = False
     enable_dmtac_images: bool = False
     enable_dmtac_force: bool = False
-    enable_dmtac_images_with_force: bool = True
     dmtac_dev_ids: list[int | str] = field(default_factory=lambda: ["auto"])
     dmtac_auto_count: int = 2
     dmtac_sdk_dir: Path | None = Path("/home/robot/daimeng/DM-Tac-SDK/SDK_Publish_V1.2.13.1")
@@ -55,8 +54,9 @@ class TJRobotConfig(RobotConfig):
     dmtac_max_fps: int = 120
     dmtac_show_fps: bool = False
     dmtac_cpu_fallback: bool = True
-    dmtac_image_height: int = 240
-    dmtac_image_width: int = 320
+    # DM-Tac raw camera frames are 640 x 480 (width x height).
+    dmtac_image_height: int = 480
+    dmtac_image_width: int = 640
     dmtac_image_channels: int = 3
     dmtac_force_dim: int = 6
     dmtac_wait_timeout_ms: int = 500
@@ -72,7 +72,6 @@ class TJRobotConfig(RobotConfig):
     wait_response_on_action: bool = False
     action_response_timeout_ms: int = 100
     log_switch: bool = False
-    local_log_switch: bool = False
     silent_sdk: bool = True
     disable_on_disconnect: bool = True
 
@@ -104,8 +103,6 @@ class TJRobotConfig(RobotConfig):
             }.items():
                 if not 0 <= value <= 255:
                     raise ValueError(f"{name} must be in [0, 255], got {value}")
-        if self.enable_dmtac_force and self.enable_dmtac_images_with_force:
-            self.enable_dmtac_images = True
         if self.enable_dmtac_images or self.enable_dmtac_force:
             if not self.dmtac_dev_ids:
                 raise ValueError(
